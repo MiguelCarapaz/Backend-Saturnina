@@ -1,10 +1,13 @@
 from sqlalchemy import Column, Integer, String, Text
-from sqlalchemy.ext.declarative import declarative_base
-
-Base = declarative_base()
+from app.database import Base
 
 class Category(Base):
     __tablename__ = "categories"
+
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)
+    name = Column(String(50), unique=True, nullable=False)
     description = Column(Text)
+    is_active = Column(Boolean, default=True)
+
+    def __repr__(self):
+        return f"<Category {self.name}>"
