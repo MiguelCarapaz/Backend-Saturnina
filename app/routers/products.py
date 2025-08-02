@@ -78,7 +78,10 @@ class CategoryOut(CategoryBase):
 async def get_product_or_404(db: AsyncSession, product_id: int):
     result = await db.execute(
         select(Product)
-        .options(joinedload(Product.images))
+        .options(
+            joinedload(Product.images),
+            joinedload(Product.category)  # ¡Carga la categoría!
+        )
         .where(Product.id == product_id)
     )
     product = result.scalar_one_or_none()
@@ -88,6 +91,37 @@ async def get_product_or_404(db: AsyncSession, product_id: int):
             detail="Producto no encontrado"
         )
     return product
+
+@router.get("/products", response_class=JSONResponse)
+async def read_products(
+    skip: int = 0,
+    limit: int = 100,
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        query = select(Product).options(
+            joinedload(Product.images),
+            joinedload(Product.category)  # ¡Carga la categoría!
+        )
+            
+        result = await db.execute(
+            query.order_by(Product.id)
+            .offset(skip)
+            .limit(limit)
+        )
+        products = result.scalars().unique().all()
+        
+        return JSONResponse(
+            content={
+                "detail": [format_product_response(product) for product in products]
+            },
+            status_code=200
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al obtener productos: {str(e)}"
+        )
 
 async def get_category_or_404(db: AsyncSession, category_id: int):
     result = await db.execute(select(Category).where(Category.id == category_id))
@@ -100,6 +134,14 @@ async def get_category_or_404(db: AsyncSession, category_id: int):
     return category
 
 def format_product_response(product: Product):
+    # Cargar la categoría si no está cargada
+    category_name = ""
+    if hasattr(product, 'category') and product.category:
+        category_name = product.category.name
+    elif product.category_id:
+        # Opcional: Puedes cargar la categoría aquí si es necesario
+        pass
+
     imagenes_formateadas = []
     if product.images:
         for img in product.images:
@@ -115,15 +157,13 @@ def format_product_response(product: Product):
         "name": product.name,
         "descripcion": product.description,
         "precio": float(product.price),
-        "price": float(product.price),
         "imagen": imagenes_formateadas,
-        "images": imagenes_formateadas,
         "category": product.category_id,
         "category_id": product.category_id,
+        "category_name": category_name,  # Usamos el nombre obtenido
         "stock": product.stock,
         "created_at": product.created_at.isoformat() if product.created_at else None,
-        "updated_at": product.updated_at.isoformat() if product.updated_at else None,
-        "category_name": product.category.name if product.category else ""
+        "updated_at": product.updated_at.isoformat() if product.updated_at else None
     }
 
 def format_category_response(category: Category):
