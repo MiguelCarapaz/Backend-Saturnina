@@ -15,6 +15,7 @@ class Product(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, onupdate=datetime.utcnow)
     images = relationship("ProductImage", back_populates="product")
+    category = relationship("Category", back_populates="products")
 
 class ProductImage(Base):
     __tablename__ = "product_images"

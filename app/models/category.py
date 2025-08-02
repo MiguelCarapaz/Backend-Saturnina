@@ -10,3 +10,4 @@ class Category(Base):
     description = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, onupdate=datetime.utcnow)
+    products = relationship("Product", back_populates="category")
