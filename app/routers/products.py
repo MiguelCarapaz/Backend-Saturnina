@@ -20,7 +20,6 @@ class ImageSchema(BaseModel):
     id: Optional[int] = None
     image_url: str
     is_main: bool = False
-    created_at: Optional[datetime] = None
 
 class ProductBase(BaseModel):
     name: str
@@ -28,10 +27,9 @@ class ProductBase(BaseModel):
     price: float
     category_id: int
     stock: int = 0
-    images: List[ImageSchema] = []
 
 class ProductCreate(ProductBase):
-    pass
+    images: List[ImageSchema] = []
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -41,10 +39,16 @@ class ProductUpdate(BaseModel):
     stock: Optional[int] = None
     images: Optional[List[ImageSchema]] = None
 
-class ProductOut(ProductBase):
+class ProductOut(BaseModel):
     id: int
-    id_producto: str  # Campo adicional para frontend
-    created_at: datetime
+    id_producto: str
+    name: str
+    descripcion: Optional[str] = None
+    precio: float
+    imagen: List[dict]
+    category: int
+    stock: int
+    created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
     class Config:
@@ -62,7 +66,7 @@ class CategoryUpdate(BaseModel):
     description: Optional[str] = None
 
 class CategoryOut(CategoryBase):
-    id: str  # Formateado como "category:id" para frontend
+    id: str
     created_at: datetime
     updated_at: Optional[datetime] = None
 
@@ -96,29 +100,30 @@ async def get_category_or_404(db: AsyncSession, category_id: int):
     return category
 
 def format_product_response(product: Product):
-    images = [{
-        "id": img.id,
-        "image_url": img.image_url,
-        "is_main": img.is_main,
-        "created_at": img.created_at.isoformat() if img.created_at else None
-    } for img in product.images]
-    
-    main_image = next((img.image_url for img in product.images if img.is_main), None)
+    imagenes_formateadas = []
+    if product.images:
+        for img in product.images:
+            imagenes_formateadas.append({
+                "secure_url": img.image_url,
+                "public_id": f"temp_{img.id}",
+                "main": img.is_main
+            })
     
     return {
         "id": product.id,
         "id_producto": str(product.id),
         "name": product.name,
-        "description": product.description,
+        "descripcion": product.description,
+        "precio": float(product.price),
         "price": float(product.price),
-        "precio": float(product.price),  # Duplicado para compatibilidad frontend
-        "images": images,
-        "imagen": main_image,  # Solo la imagen principal para compatibilidad
+        "imagen": imagenes_formateadas,
+        "images": imagenes_formateadas,
+        "category": product.category_id,
         "category_id": product.category_id,
-        "category": product.category_id,  # Duplicado para frontend
         "stock": product.stock,
         "created_at": product.created_at.isoformat() if product.created_at else None,
-        "updated_at": product.updated_at.isoformat() if product.updated_at else None
+        "updated_at": product.updated_at.isoformat() if product.updated_at else None,
+        "category_name": product.category.name if product.category else ""
     }
 
 def format_category_response(category: Category):
@@ -161,6 +166,24 @@ async def read_products(
             detail=f"Error al obtener productos: {str(e)}"
         )
 
+@router.get("/products/featured", response_class=JSONResponse)
+async def get_featured_products(db: AsyncSession = Depends(get_db)):
+    try:
+        result = await db.execute(
+            select(Product)
+            .options(joinedload(Product.images))
+            .order_by(Product.created_at.desc())
+            .limit(8)
+        )
+        products = result.scalars().unique().all()
+        
+        return JSONResponse(
+            content={"detail": [format_product_response(p) for p in products]},
+            status_code=200
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/products/{product_id}", response_class=JSONResponse)
 async def read_product(
     product_id: int, 
@@ -186,10 +209,8 @@ async def create_product(
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        # Verificar categoría existente
         await get_category_or_404(db, product.category_id)
         
-        # Verificar nombre único
         existing_product = await db.execute(
             select(Product).where(Product.name == product.name)
         )
@@ -199,14 +220,12 @@ async def create_product(
                 detail="Ya existe un producto con este nombre"
             )
         
-        # Crear producto
         product_data = product.dict(exclude={"images"})
         new_product = Product(**product_data)
         db.add(new_product)
         await db.commit()
         await db.refresh(new_product)
         
-        # Agregar imágenes si existen
         if product.images:
             for img in product.images:
                 new_image = ProductImage(
@@ -246,19 +265,15 @@ async def update_product(
         if "category_id" in update_data:
             await get_category_or_404(db, update_data["category_id"])
         
-        # Actualizar campos básicos
         for field, value in update_data.items():
             setattr(product, field, value)
         
-        # Manejo de imágenes
         if product_update.images is not None:
-            # Eliminar imágenes existentes
             await db.execute(
                 delete(ProductImage)
                 .where(ProductImage.product_id == product_id)
             )
             
-            # Agregar nuevas imágenes
             for img in product_update.images:
                 new_image = ProductImage(
                     product_id=product_id,
@@ -325,7 +340,6 @@ async def read_categories(
         
         response_data = [format_category_response(cat) for cat in categories]
         
-        # Agregar opción "Todos"
         response_data.insert(0, {
             "id": "category:todos",
             "name": "Todos",
@@ -347,7 +361,7 @@ async def read_categories(
 
 @router.get("/category/{category_id}", response_class=JSONResponse)
 async def read_category(
-    category_id: str,  # Acepta "todos" o ID numérico
+    category_id: str,
     db: AsyncSession = Depends(get_db)
 ):
     try:
@@ -390,7 +404,6 @@ async def create_category(
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        # Verificar nombre único
         existing_cat = await db.execute(
             select(Category).where(Category.name == category.name))
         if existing_cat.scalar_one_or_none():
@@ -430,7 +443,6 @@ async def update_category(
         update_data = category_update.dict(exclude_unset=True)
         
         if "name" in update_data:
-            # Verificar nombre único
             existing_cat = await db.execute(
                 select(Category)
                 .where(Category.name == update_data["name"])
@@ -475,7 +487,7 @@ async def delete_category(
         product_exists = await db.execute(
             select(Product)
             .where(Product.category_id == category_id)
-            .limit(1)  # Solo necesitamos saber si existe al menos uno
+            .limit(1)
         )
         
         if product_exists.scalar_one_or_none():
