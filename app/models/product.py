@@ -1,18 +1,27 @@
-from sqlalchemy import Column, Integer, String, Float, Text, ForeignKey, Boolean
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Column, Integer, String, Text, Numeric, ForeignKey, Boolean, DateTime
+from sqlalchemy.orm import relationship
 from app.database import Base
+from datetime import datetime
 
 class Product(Base):
     __tablename__ = "products"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), nullable=False)
+    name = Column(String, nullable=False)
     description = Column(Text)
-    price = Column(Float, nullable=False)
-    images = Column(JSONB)  # Almacena [{secure_url: "...", public_id: "..."}]
-    category_id = Column(Integer, ForeignKey("categories.id"))
+    price = Column(Numeric(10, 2), nullable=False)
     stock = Column(Integer, default=0)
-    is_active = Column(Boolean, default=True)
+    category_id = Column(Integer, ForeignKey("categories.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, onupdate=datetime.utcnow)
+    images = relationship("ProductImage", back_populates="product")
 
-    def __repr__(self):
-        return f"<Product {self.name}>"
+class ProductImage(Base):
+    __tablename__ = "product_images"
+    
+    id = Column(Integer, primary_key=True)
+    product_id = Column(Integer, ForeignKey("products.id"))
+    image_url = Column(Text, nullable=False)
+    is_main = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    product = relationship("Product", back_populates="images")

@@ -1,30 +1,34 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy import delete
 from app.database import get_db
-from app.models.product import Product
+from app.models.product import Product, ProductImage
 from app.models.category import Category
 from typing import List, Optional
 from pydantic import BaseModel
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from datetime import datetime
+from sqlalchemy.orm import joinedload
+
 
 router = APIRouter()
 
 # ====================== MODELOS PYDANTIC ======================
 
 class ImageSchema(BaseModel):
-    secure_url: str
-    public_id: Optional[str] = None
+    id: Optional[int] = None
+    image_url: str
+    is_main: bool = False
+    created_at: Optional[datetime] = None
 
 class ProductBase(BaseModel):
     name: str
     description: Optional[str] = None
     price: float
-    images: Optional[List[ImageSchema]] = []
     category_id: int
     stock: int = 0
-    is_active: bool = True
+    images: List[ImageSchema] = []
 
 class ProductCreate(ProductBase):
     pass
@@ -33,10 +37,9 @@ class ProductUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     price: Optional[float] = None
-    images: Optional[List[ImageSchema]] = None
     category_id: Optional[int] = None
     stock: Optional[int] = None
-    is_active: Optional[bool] = None
+    images: Optional[List[ImageSchema]] = None
 
 class ProductOut(ProductBase):
     id: int
@@ -50,7 +53,6 @@ class ProductOut(ProductBase):
 class CategoryBase(BaseModel):
     name: str
     description: Optional[str] = None
-    is_active: bool = True
 
 class CategoryCreate(CategoryBase):
     pass
@@ -58,7 +60,6 @@ class CategoryCreate(CategoryBase):
 class CategoryUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
-    is_active: Optional[bool] = None
 
 class CategoryOut(CategoryBase):
     id: str  # Formateado como "category:id" para frontend
@@ -71,7 +72,11 @@ class CategoryOut(CategoryBase):
 # ====================== FUNCIONES AUXILIARES ======================
 
 async def get_product_or_404(db: AsyncSession, product_id: int):
-    result = await db.execute(select(Product).where(Product.id == product_id))
+    result = await db.execute(
+        select(Product)
+        .options(joinedload(Product.images))
+        .where(Product.id == product_id)
+    )
     product = result.scalar_one_or_none()
     if not product:
         raise HTTPException(
@@ -91,6 +96,15 @@ async def get_category_or_404(db: AsyncSession, category_id: int):
     return category
 
 def format_product_response(product: Product):
+    images = [{
+        "id": img.id,
+        "image_url": img.image_url,
+        "is_main": img.is_main,
+        "created_at": img.created_at.isoformat() if img.created_at else None
+    } for img in product.images]
+    
+    main_image = next((img.image_url for img in product.images if img.is_main), None)
+    
     return {
         "id": product.id,
         "id_producto": str(product.id),
@@ -98,12 +112,11 @@ def format_product_response(product: Product):
         "description": product.description,
         "price": float(product.price),
         "precio": float(product.price),  # Duplicado para compatibilidad frontend
-        "images": [img for img in (product.images or [])],
-        "imagen": [img for img in (product.images or [])],  # Duplicado para frontend
+        "images": images,
+        "imagen": main_image,  # Solo la imagen principal para compatibilidad
         "category_id": product.category_id,
         "category": product.category_id,  # Duplicado para frontend
         "stock": product.stock,
-        "is_active": product.is_active,
         "created_at": product.created_at.isoformat() if product.created_at else None,
         "updated_at": product.updated_at.isoformat() if product.updated_at else None
     }
@@ -113,31 +126,27 @@ def format_category_response(category: Category):
         "id": f"category:{category.id}",
         "name": category.name,
         "description": category.description,
-        "is_active": category.is_active,
         "created_at": category.created_at.isoformat() if category.created_at else None,
         "updated_at": category.updated_at.isoformat() if category.updated_at else None
     }
 
+# ====================== ENDPOINTS DE PRODUCTOS ======================
 
 @router.get("/products", response_class=JSONResponse)
 async def read_products(
     skip: int = 0,
     limit: int = 100,
-    is_active: Optional[bool] = None,
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        query = select(Product)
-        
-        if is_active is not None:
-            query = query.where(Product.is_active == is_active)
+        query = select(Product).options(joinedload(Product.images))
             
         result = await db.execute(
             query.order_by(Product.id)
             .offset(skip)
             .limit(limit)
         )
-        products = result.scalars().all()
+        products = result.scalars().unique().all()
         
         return JSONResponse(
             content={
@@ -190,10 +199,24 @@ async def create_product(
                 detail="Ya existe un producto con este nombre"
             )
         
-        new_product = Product(**product.dict())
+        # Crear producto
+        product_data = product.dict(exclude={"images"})
+        new_product = Product(**product_data)
         db.add(new_product)
         await db.commit()
         await db.refresh(new_product)
+        
+        # Agregar imágenes si existen
+        if product.images:
+            for img in product.images:
+                new_image = ProductImage(
+                    product_id=new_product.id,
+                    image_url=img.image_url,
+                    is_main=img.is_main
+                )
+                db.add(new_image)
+            await db.commit()
+            await db.refresh(new_product)
         
         return JSONResponse(
             content={"detail": format_product_response(new_product)},
@@ -218,16 +241,33 @@ async def update_product(
     try:
         product = await get_product_or_404(db, product_id)
         
-        update_data = product_update.dict(exclude_unset=True)
+        update_data = product_update.dict(exclude_unset=True, exclude={"images"})
         
         if "category_id" in update_data:
             await get_category_or_404(db, update_data["category_id"])
         
+        # Actualizar campos básicos
         for field, value in update_data.items():
             setattr(product, field, value)
-            
-        product.updated_at = datetime.utcnow()
         
+        # Manejo de imágenes
+        if product_update.images is not None:
+            # Eliminar imágenes existentes
+            await db.execute(
+                delete(ProductImage)
+                .where(ProductImage.product_id == product_id)
+            )
+            
+            # Agregar nuevas imágenes
+            for img in product_update.images:
+                new_image = ProductImage(
+                    product_id=product_id,
+                    image_url=img.image_url,
+                    is_main=img.is_main
+                )
+                db.add(new_image)
+        
+        product.updated_at = datetime.utcnow()
         await db.commit()
         await db.refresh(product)
         
@@ -254,7 +294,7 @@ async def delete_product(
         product = await get_product_or_404(db, product_id)
         await db.delete(product)
         await db.commit()
-        return JSONResponse(content=None, status_code=204)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
         
     except HTTPException:
         raise
@@ -271,14 +311,10 @@ async def delete_product(
 async def read_categories(
     skip: int = 0,
     limit: int = 100,
-    is_active: Optional[bool] = None,
     db: AsyncSession = Depends(get_db)
 ):
     try:
         query = select(Category)
-        
-        if is_active is not None:
-            query = query.where(Category.is_active == is_active)
             
         result = await db.execute(
             query.order_by(Category.id)
@@ -294,7 +330,6 @@ async def read_categories(
             "id": "category:todos",
             "name": "Todos",
             "description": "Todos los productos",
-            "is_active": True,
             "created_at": datetime.utcnow().isoformat(),
             "updated_at": None
         })
@@ -323,7 +358,6 @@ async def read_category(
                         "id": "category:todos",
                         "name": "Todos",
                         "description": "Todos los productos",
-                        "is_active": True,
                         "created_at": datetime.utcnow().isoformat(),
                         "updated_at": None
                     }
@@ -446,7 +480,7 @@ async def delete_category(
         
         if product_exists.scalar_one_or_none():
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,  # 409 Conflict es más semántico
+                status_code=status.HTTP_409_CONFLICT,
                 detail="No se puede eliminar: existen productos asociados a esta categoría"
             )
         
