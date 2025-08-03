@@ -35,9 +35,10 @@ class UserResponse(BaseModel):
     name: str
     last_name: str
     role: str
+    numero: str = None  # Agregado para exponer el número de teléfono
 
 class TokenWithUser(BaseModel):
-    access_token: str
+    token: str  # Cambiado de access_token a token
     token_type: str
     user: UserResponse
 
@@ -106,14 +107,15 @@ async def login(form_data: LoginForm, db: AsyncSession = Depends(get_db)):
     )
     
     return {
-        "access_token": access_token,
+        "token": access_token,  # Cambiado de "access_token"
         "token_type": "bearer",
         "user": {
             "id": str(user.id),
             "email": user.email,
             "name": user.name,
             "last_name": user.last_name,
-            "role": user.role
+            "role": user.role,
+            "numero": user.phone  # Agregado campo numero
         }
     }
 
@@ -152,13 +154,14 @@ async def register(user_data: dict, db: AsyncSession = Depends(get_db)):
     )
     
     return {
-        "access_token": access_token,
+        "token": access_token, 
         "token_type": "bearer",
         "user": {
             "id": str(new_user.id),
             "email": new_user.email,
             "name": new_user.name,
             "last_name": new_user.last_name,
-            "role": new_user.role
+            "role": new_user.role,
+            "phone": new_user.phone 
         }
     }
