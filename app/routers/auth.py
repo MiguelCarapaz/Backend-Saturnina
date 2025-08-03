@@ -28,9 +28,18 @@ class LoginForm(BaseModel):
     email: str
     password: str
 
-class Token(BaseModel):
+
+class UserResponse(BaseModel):
+    id: str
+    email: str
+    name: str
+    last_name: str
+    role: str
+
+class TokenWithUser(BaseModel):
     access_token: str
     token_type: str
+    user: UserResponse
 
 class TokenData(BaseModel):
     email: Optional[str] = None
@@ -80,7 +89,7 @@ async def get_current_user(
     return user
 
 # Endpoints
-@router.post("/login", response_model=Token)
+@router.post("/login", response_model=TokenWithUser)
 async def login(form_data: LoginForm, db: AsyncSession = Depends(get_db)):
     user = await get_user_by_email(db, form_data.email)
     if not user or not verify_password(form_data.password, user.password_hash):
@@ -108,7 +117,7 @@ async def login(form_data: LoginForm, db: AsyncSession = Depends(get_db)):
         }
     }
 
-@router.post("/register")
+@router.post("/register", response_model=TokenWithUser)
 async def register(user_data: dict, db: AsyncSession = Depends(get_db)):
     # Verificar si el usuario ya existe
     existing_user = await get_user_by_email(db, user_data["email"])
