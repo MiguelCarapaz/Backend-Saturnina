@@ -21,11 +21,13 @@ class UserProfile(BaseModel):
     phone: Optional[str] = None
     role: str
 
-@router.get("/me", response_model=UserProfile)
-async def read_user_me(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
+
+# Endpoint /profile (sin prefijo /users) para compatibilidad frontend
+from fastapi import APIRouter as FastAPIRouter
+profile_router = FastAPIRouter()
+
+@profile_router.get("/profile", response_model=UserProfile)
+async def read_profile(current_user: User = Depends(get_current_user)):
     return {
         "name": current_user.name,
         "last_name": current_user.last_name,

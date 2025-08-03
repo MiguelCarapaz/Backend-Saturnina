@@ -3,19 +3,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import text
 from app.routers import example, auth, user, products, orders_comments, category
+from app.routers.user import profile_router
 from app.database import get_db
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-origins = [
-    "https://saturnina.vercel.app",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://saturnina.vercel.app/",
-    "http://localhost:3000/",
-    "http://127.0.0.1:3000/"
-]
+origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,6 +33,7 @@ app.add_middleware(
 app.include_router(example.router)
 app.include_router(auth.router)
 app.include_router(user.router)
+app.include_router(profile_router)
 app.include_router(products.router)
 app.include_router(category.router)
 app.include_router(orders_comments.router)

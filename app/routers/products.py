@@ -86,7 +86,7 @@ def format_product_response(product: Product):
         "descripcion": product.description,
         "precio": float(product.price),
         "imagen": imagenes_formateadas,
-        "category": product.category.name if product.category else "",
+        "category": product.category.name if product.category else product.category_id,
         "stock": product.stock,
         "created_at": product.created_at.isoformat() if product.created_at else None,
         "updated_at": product.updated_at.isoformat() if product.updated_at else None
