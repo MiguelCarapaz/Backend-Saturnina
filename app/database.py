@@ -9,7 +9,11 @@ Base = declarative_base()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-engine = create_async_engine(DATABASE_URL, echo=True)
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=True,
+    connect_args={"statement_cache_size": 0}
+)
 SessionLocal = sessionmaker(
     bind=engine,
     class_=AsyncSession,
