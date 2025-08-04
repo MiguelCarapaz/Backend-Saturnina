@@ -35,10 +35,10 @@ class UserResponse(BaseModel):
     name: str
     last_name: str
     role: str
-    numero: str = None  # Agregado para exponer el número de teléfono
+    phone: str = None 
 
 class TokenWithUser(BaseModel):
-    token: str  # Cambiado de access_token a token
+    token: str  
     token_type: str
     user: UserResponse
 
@@ -115,7 +115,7 @@ async def login(form_data: LoginForm, db: AsyncSession = Depends(get_db)):
             "name": user.name,
             "last_name": user.last_name,
             "role": user.role,
-            "numero": user.phone  # Agregado campo numero
+            "phone": user.phone
         }
     }
 
