@@ -90,7 +90,7 @@ async def get_current_user(
     return user
 
 # Endpoints
-@router.post("/login", response_model=TokenWithUser)
+@router.post("/login")
 async def login(form_data: LoginForm, db: AsyncSession = Depends(get_db)):
     user = await get_user_by_email(db, form_data.email)
     if not user or not verify_password(form_data.password, user.password_hash):
@@ -107,14 +107,13 @@ async def login(form_data: LoginForm, db: AsyncSession = Depends(get_db)):
     )
     
     return {
-        "token": access_token,  # Cambiado de "access_token"
-        "token_type": "bearer",
-        "user": {
+        "detail": {
+            "token": access_token,
             "id": str(user.id),
+            "rol": user.role,
             "email": user.email,
             "name": user.name,
             "last_name": user.last_name,
-            "role": user.role,
             "phone": user.phone
         }
     }
