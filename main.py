@@ -38,7 +38,7 @@ app.include_router(products.router)
 app.include_router(category.router)
 app.include_router(orders_comments.router)
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"])
 def root():
     return {"message": "Saturnina Backend API"}
 
