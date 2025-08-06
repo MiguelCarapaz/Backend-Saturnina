@@ -82,7 +82,7 @@ async def get_current_user(
     return user
 
 # Endpoint de login
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login")
 async def login(form_data: LoginForm, db: AsyncSession = Depends(get_db)):
     user = await get_user_by_email(db, form_data.email)
     
@@ -98,29 +98,30 @@ async def login(form_data: LoginForm, db: AsyncSession = Depends(get_db)):
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Cuenta inactiva. Contacta al administrador."
         )
-
+    
+    # Mapeo de roles
     role_mapping = {
-        "admin": ADMIN_ROLE,
-        "user": USER_ROLE
+        "admin": "rol:74rvq7jatzo6ac19mc79",
+        "user": "rol:vuqn7k4vw0m1a3wt7fkb"
     }
     
-    frontend_role = role_mapping.get(user.role, USER_ROLE)
+    # Obtener el rol
+    frontend_role = role_mapping.get(user.role, "rol:vuqn7k4vw0m1a3wt7fkb")
     
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.email},
         expires_delta=access_token_expires
     )
-    
+    # Retornar el token y los datos del usuario
     return {
-        "token": access_token,
-        "token_type": "bearer",
-        "user": {
+        "detail": {
+            "token": access_token,  
             "id": str(user.id),
+            "rol": frontend_role,
             "email": user.email,
             "name": user.name,
             "last_name": user.last_name,
-            "role": frontend_role,
             "phone": user.phone
         }
     }
