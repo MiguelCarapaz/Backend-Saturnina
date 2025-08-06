@@ -73,12 +73,12 @@ async def get_product_or_404(db: AsyncSession, product_id: int):
     return product
 
 def format_product_response(product: Product):
-    imagenes_formateadas = [{
+    imagenes_formateadas = [ {
         "secure_url": img.image_url,
         "public_id": f"temp_{img.id}",
         "main": img.is_main
-    } for img in product.images] if product.images else []
-    
+    } for img in product.images ] if product.images else []
+
     return {
         "id": product.id,
         "id_producto": str(product.id),
@@ -86,7 +86,7 @@ def format_product_response(product: Product):
         "descripcion": product.description,
         "precio": float(product.price),
         "imagen": imagenes_formateadas,
-        "category": product.category.name if product.category else product.category_id,
+        "category": f"category:{product.category.id}" if product.category else f"category:{product.category_id}",
         "stock": product.stock,
         "created_at": product.created_at.isoformat() if product.created_at else None,
         "updated_at": product.updated_at.isoformat() if product.updated_at else None
