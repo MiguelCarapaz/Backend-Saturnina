@@ -18,6 +18,10 @@ SECRET_KEY = os.getenv("SECRET_KEY", "testsecret")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
+# Definición de roles
+ADMIN_ROLE = "rol:74rvq7jatzo6ac19mc79"
+USER_ROLE = "rol:vuqn7k4vw0m1a3wt7fkb"
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
@@ -28,22 +32,10 @@ class LoginForm(BaseModel):
     email: str
     password: str
 
-
-class UserResponse(BaseModel):
-    id: str
-    email: str
-    name: str
-    last_name: str
-    role: str
-    phone: str = None 
-
-class TokenWithUser(BaseModel):
-    token: str  
+class TokenResponse(BaseModel):
+    token: str
     token_type: str
-    user: UserResponse
-
-class TokenData(BaseModel):
-    email: Optional[str] = None
+    user: dict
 
 # Funciones auxiliares
 async def get_user_by_email(db: AsyncSession, email: str):
@@ -89,16 +81,30 @@ async def get_current_user(
         raise credentials_exception
     return user
 
-# Endpoints
-@router.post("/login")
+# Endpoint de login
+@router.post("/login", response_model=TokenResponse)
 async def login(form_data: LoginForm, db: AsyncSession = Depends(get_db)):
     user = await get_user_by_email(db, form_data.email)
+    
     if not user or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Correo o contraseña incorrectos",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cuenta inactiva. Contacta al administrador."
+        )
+
+    role_mapping = {
+        "admin": ADMIN_ROLE,
+        "user": USER_ROLE
+    }
+    
+    frontend_role = role_mapping.get(user.role, USER_ROLE)
     
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
@@ -107,20 +113,21 @@ async def login(form_data: LoginForm, db: AsyncSession = Depends(get_db)):
     )
     
     return {
-        "detail": {
-            "token": access_token,
+        "token": access_token,
+        "token_type": "bearer",
+        "user": {
             "id": str(user.id),
-            "rol": user.role,
             "email": user.email,
             "name": user.name,
             "last_name": user.last_name,
+            "role": frontend_role,
             "phone": user.phone
         }
     }
 
-@router.post("/register", response_model=TokenWithUser)
+# Endpoint de registro
+@router.post("/register", response_model=TokenResponse)
 async def register(user_data: dict, db: AsyncSession = Depends(get_db)):
-    # Verificar si el usuario ya existe
     existing_user = await get_user_by_email(db, user_data["email"])
     if existing_user:
         raise HTTPException(
@@ -128,14 +135,13 @@ async def register(user_data: dict, db: AsyncSession = Depends(get_db)):
             detail="El correo electrónico ya está registrado"
         )
     
-    # Crear nuevo usuario
     hashed_password = get_password_hash(user_data["password"])
     new_user = User(
         name=user_data.get("name"),
         last_name=user_data.get("last_name"),
         email=user_data["email"],
         password_hash=hashed_password,
-        role="user",
+        role="user",  # Por defecto se asigna rol de usuario normal
         address=user_data.get("address"),
         phone=user_data.get("phone"),
         is_active=True
@@ -145,7 +151,6 @@ async def register(user_data: dict, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(new_user)
     
-    # Generar token para el nuevo usuario
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": new_user.email},
@@ -153,14 +158,14 @@ async def register(user_data: dict, db: AsyncSession = Depends(get_db)):
     )
     
     return {
-        "token": access_token, 
+        "token": access_token,
         "token_type": "bearer",
         "user": {
             "id": str(new_user.id),
             "email": new_user.email,
             "name": new_user.name,
             "last_name": new_user.last_name,
-            "role": new_user.role,
-            "phone": new_user.phone 
+            "role": USER_ROLE,  
+            "phone": new_user.phone
         }
     }
