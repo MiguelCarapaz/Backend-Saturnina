@@ -13,4 +13,4 @@ class User(Base):
     role = Column(String, nullable=False, default="user")
     address = Column(Text, nullable=True)
     phone = Column(String, nullable=True)
-    is_active = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=True, nullable=False)
