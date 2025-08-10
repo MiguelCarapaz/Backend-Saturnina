@@ -143,7 +143,7 @@ async def send_verification_email(email: str, token: str, background_tasks: Back
     
     background_tasks.add_task(send_email)
 
-# Endpoints (se mantienen igual, solo cambia la generación del token)
+# Endpoints 
 @router.post("/login")
 async def login(form_data: LoginForm, db: AsyncSession = Depends(get_db)):
     user = await get_user_by_email(db, form_data.email)
@@ -176,9 +176,9 @@ async def login(form_data: LoginForm, db: AsyncSession = Depends(get_db)):
             "id": str(user.id),
             "rol": frontend_role,
             "email": user.email,
-            "name": user.name,
-            "last_name": user.last_name,
-            "phone": user.phone
+            "nombre": user.name,
+            "apellido": user.last_name,
+            "telefono": user.phone
         }
     }
 
