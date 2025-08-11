@@ -5,7 +5,6 @@ from datetime import datetime
 
 class Product(Base):
     __tablename__ = "products"
-
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     description = Column(Text)
@@ -14,15 +13,26 @@ class Product(Base):
     category_id = Column(Integer, ForeignKey("categories.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, onupdate=datetime.utcnow)
+
     images = relationship("ProductImage", back_populates="product")
     category = relationship("Category", back_populates="products")
-
+    sizes = relationship("ProductSize", cascade="all, delete-orphan")
+    colors = relationship("ProductColor", cascade="all, delete-orphan")
 class ProductImage(Base):
     __tablename__ = "product_images"
-    
     id = Column(Integer, primary_key=True)
     product_id = Column(Integer, ForeignKey("products.id"))
     image_url = Column(Text, nullable=False)
     is_main = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     product = relationship("Product", back_populates="images")
+class ProductSize(Base):
+    __tablename__ = "product_sizes"
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"))
+    name = Column(String, nullable=False)
+class ProductColor(Base):
+    __tablename__ = "product_colors"
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"))
+    name = Column(String, nullable=False)
