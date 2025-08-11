@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import text
@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# ✅ Dominios permitidos (Producción y Desarrollo)
+# ✅ Dominios permitidos
 origins = [
     "https://saturnina.vercel.app",  # Producción
     "http://localhost:3000",         # Local React dev
@@ -18,12 +18,28 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,      # Lista explícita de dominios
-    allow_credentials=True,     # Para cookies y Authorization header
-    allow_methods=["*"],        # Todos los métodos HTTP
-    allow_headers=["*"],        # Todas las cabeceras
-    expose_headers=["*"],       # Exponer cabeceras al frontend
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+# 📌 Middleware para registrar cada request (debug CORS y Auth)
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    print(f"\n🔹 Nueva petición:")
+    print(f"   Método: {request.method}")
+    print(f"   URL: {request.url}")
+    print(f"   Origen: {request.headers.get('origin')}")
+    print(f"   Authorization: {request.headers.get('authorization')}")
+    print(f"   Content-Type: {request.headers.get('content-type')}")
+    
+    response = await call_next(request)
+    
+    print(f"   ↩ Status: {response.status_code}")
+    print(f"   ↩ CORS Headers: {response.headers.get('access-control-allow-origin')}")
+    return response
 
 # Routers
 app.include_router(example.router)
