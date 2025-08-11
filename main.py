@@ -9,20 +9,23 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
+# ✅ Dominios permitidos (Producción y Desarrollo)
 origins = [
-    "https://saturnina.vercel.app", 
+    "https://saturnina.vercel.app",  # Producción
+    "http://localhost:3000",         # Local React dev
+    "http://127.0.0.1:3000"          # Otra forma de local
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,     
-    allow_credentials=True,
-    allow_methods=["*"],            
-    allow_headers=["*"],             
-    expose_headers=["*"],            
+    allow_origins=origins,      # Lista explícita de dominios
+    allow_credentials=True,     # Para cookies y Authorization header
+    allow_methods=["*"],        # Todos los métodos HTTP
+    allow_headers=["*"],        # Todas las cabeceras
+    expose_headers=["*"],       # Exponer cabeceras al frontend
 )
 
-
+# Routers
 app.include_router(example.router)
 app.include_router(auth.router)
 app.include_router(user.router)
