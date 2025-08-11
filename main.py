@@ -9,27 +9,20 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-origins = ["*"]
+origins = [
+    "https://saturnina.vercel.app", 
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=origins,     
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    allow_headers=[
-        "Content-Type",
-        "Authorization",
-        "Access-Control-Allow-Origin",
-        "Access-Control-Allow-Headers",
-        "Access-Control-Allow-Methods",
-        "Access-Control-Allow-Credentials",
-        "*"
-    ],
-    expose_headers=["*"],
-    max_age=600
+    allow_methods=["*"],            
+    allow_headers=["*"],             
+    expose_headers=["*"],            
 )
 
-# Incluye tus routers aquí
+
 app.include_router(example.router)
 app.include_router(auth.router)
 app.include_router(user.router)
