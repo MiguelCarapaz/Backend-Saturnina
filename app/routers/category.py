@@ -1,12 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Path, Body
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import update, delete
 from app.database import get_db
 from app.models.category import Category
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 from datetime import datetime
 
 router = APIRouter()
@@ -27,15 +27,9 @@ class CategoryOut(BaseModel):
 
 @router.get("/category", response_class=JSONResponse)
 async def read_categories(skip: int = 0, limit: int = 100, db: AsyncSession = Depends(get_db)):
-    """
-    Retorna la lista de categorías en formato:
-    { "detail": [ {id, name, description, created_at, updated_at}, ... ] }
-    (esto es lo que espera el frontend)
-    """
     try:
         result = await db.execute(select(Category).order_by(Category.id).offset(skip).limit(limit))
         categories = result.scalars().all()
-        # Formatear lista
         detail = [
             {
                 "id": c.id,
@@ -72,7 +66,6 @@ async def read_category(category_id: int = Path(..., gt=0), db: AsyncSession = D
 @router.post("/category", response_class=JSONResponse, status_code=201)
 async def create_category(payload: CategoryCreate = Body(...), db: AsyncSession = Depends(get_db)):
     try:
-        # validar nombre único (opcional)
         q = await db.execute(select(Category).where(Category.name == payload.name))
         if q.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Ya existe una categoría con ese nombre")
@@ -111,7 +104,6 @@ async def update_category(category_id: int, payload: CategoryCreate = Body(...),
         )
         await db.commit()
 
-        # devolver la categoría actualizada
         result = await db.execute(select(Category).where(Category.id == category_id))
         updated = result.scalar_one()
         detail = {
@@ -135,6 +127,13 @@ async def delete_category(category_id: int, db: AsyncSession = Depends(get_db)):
         category = result.scalar_one_or_none()
         if not category:
             raise HTTPException(status_code=404, detail="Categoría no encontrada")
+
+        # opcional: comprobar productos asociados antes de borrar (prudente)
+        from app.models.product import Product
+        prod_q = await db.execute(select(Product).where(Product.category_id == category_id))
+        associated = prod_q.scalars().first()
+        if associated:
+            raise HTTPException(status_code=400, detail="No se puede eliminar: existen productos asociados a esta categoría")
 
         await db.execute(delete(Category).where(Category.id == category_id))
         await db.commit()

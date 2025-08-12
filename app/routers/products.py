@@ -214,67 +214,65 @@ async def read_product(product_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Error al obtener producto: {str(e)}")
 
 @router.post("/products", response_class=JSONResponse, status_code=201)
-async def create_product(request: Request, db: AsyncSession = Depends(get_db)):
-    """
-    Crea producto. multipart/form-data:
-      - campos: nombre_producto, id_categoria ("category:1" o "1"), descripcion, precio, stock
-      - tallas y colores como JSON string
-      - archivos (keys: imagenes_producto, imagen_producto, files, images) -> hasta 4
-    """
+async def create_product(
+    nombre_producto: str = Form(...),
+    id_categoria: str = Form(...),
+    descripcion: Optional[str] = Form(None),
+    precio: float = Form(...),
+    stock: int = Form(0),
+    tallas: str = Form("[]"),
+    colores: str = Form("[]"),
+    imagenes_producto: List[UploadFile] = File([]),
+    db: AsyncSession = Depends(get_db)
+):
     try:
-        form = await request.form()
-
-        nombre_producto = form.get("nombre_producto") or ""
-        id_categoria = form.get("id_categoria") or form.get("id_category") or ""
-        descripcion = form.get("descripcion") or None
-        precio = form.get("precio") or 0
-        stock = form.get("stock") or 0
-        tallas_raw = form.get("tallas") or "[]"
-        colores_raw = form.get("colores") or "[]"
-
+        # Parse tallas/colores
         try:
-            tallas_list = json.loads(tallas_raw)
-            colores_list = json.loads(colores_raw)
+            tallas_list = json.loads(tallas)
+            colores_list = json.loads(colores)
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Formato inválido para tallas o colores")
 
-        files = await extract_files_from_form(form, ["imagenes_producto", "imagen_producto", "files", "images"])
-
-        if len(files) > 4:
+        # Validar cantidad de imágenes
+        if len(imagenes_producto) > 4:
             raise HTTPException(status_code=400, detail="No se pueden subir más de 4 imágenes por producto")
 
-        # normalizar id_categoria
+        # Normalizar id_categoria: puede venir "category:1", "1" o 1
+        category_id = None
         if isinstance(id_categoria, str) and id_categoria.startswith("category:"):
-            category_id = int(id_categoria.split(":")[1])
+            try:
+                category_id = int(id_categoria.split(":")[1])
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Formato inválido para id_categoria")
         else:
             try:
                 category_id = int(id_categoria)
             except Exception:
                 raise HTTPException(status_code=400, detail="Formato inválido para id_categoria")
 
-        # verificar categoría
-        category_q = await db.execute(select(Category).where(Category.id == category_id))
-        if not category_q.scalar_one_or_none():
+        # Verificar existencia de la categoría
+        category = await db.execute(select(Category).where(Category.id == category_id))
+        if not category.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Categoría no encontrada")
 
-        # verificar nombre único
+        # Verificar nombre único
         existing_product = await db.execute(select(Product).where(Product.name == nombre_producto))
         if existing_product.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Ya existe un producto con este nombre")
 
-        # crear producto
+        # Crear producto
         new_product = Product(
             name=nombre_producto,
             description=descripcion,
-            price=float(precio),
+            price=precio,
             category_id=category_id,
-            stock=int(stock)
+            stock=stock
         )
         db.add(new_product)
-        await db.flush()  # obtener id antes de subir imágenes
+        await db.flush()  # necesitamos id para subir imágenes
 
-        # subir imágenes (hasta 4)
-        for i, imagen in enumerate(files[:4]):
+        # Subir imágenes y agregar ProductImage
+        for i, imagen in enumerate(imagenes_producto[:4]):
             image_url = await upload_to_supabase_storage(imagen, new_product.id)
             db.add(ProductImage(
                 product_id=new_product.id,
@@ -289,15 +287,11 @@ async def create_product(request: Request, db: AsyncSession = Depends(get_db)):
 
         # colores
         for color in colores_list:
-            if isinstance(color, dict):
-                name = color.get("name")
-            else:
-                name = str(color)
+            name = color.get("name") if isinstance(color, dict) else str(color)
             db.add(ProductColor(product_id=new_product.id, name=name))
 
         await db.commit()
         await db.refresh(new_product)
-
         return JSONResponse(content={"detail": format_product_response(new_product)}, status_code=201)
 
     except HTTPException:
@@ -305,6 +299,7 @@ async def create_product(request: Request, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al crear producto: {str(e)}")
+
 
 @router.put("/products/{product_id}", response_class=JSONResponse)
 async def update_product(product_id: int, request: Request, db: AsyncSession = Depends(get_db)):
