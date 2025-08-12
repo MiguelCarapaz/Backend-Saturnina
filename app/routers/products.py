@@ -292,110 +292,40 @@ async def create_product(
         raise HTTPException(status_code=500, detail=f"Error al crear producto: {str(e)}")
 
 @router.put("/products/{product_id}", response_class=JSONResponse)
-async def update_product(
-    product_id: int,
-    data: str = Form(...),
-    imagen_producto: Optional[UploadFile] = File(None),
-    db: AsyncSession = Depends(get_db)
-):
+async def upload_to_supabase_storage(file: UploadFile, product_id: int) -> str:
+    """Sube un archivo a Supabase Storage y retorna la URL pública"""
     try:
-        # Parsear y validar los datos
-        try:
-            product_data = json.loads(data)
-            product_update = ProductUpdate(**product_data)
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid JSON data")
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Datos inválidos: {str(e)}")
-
-        # Obtener el producto existente
-        product = await get_product_or_404(db, product_id)
+        # Configuración del cliente
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
         
-        # Convertir id_categoria
-        category_id = (int(product_update.id_categoria.split(":")[1]) 
-                      if product_update.id_categoria and product_update.id_categoria.startswith("category:")
-                      else product.category_id)
-
-        # Procesar imagen (si se proporciona)
-        if imagen_producto:
-            try:
-                image_url = await upload_to_supabase_storage(imagen_producto, product_id)
-                await db.execute(delete(ProductImage).where(ProductImage.product_id == product_id))
-                db.add(ProductImage(
-                    product_id=product_id,
-                    image_url=image_url,
-                    is_main=True
-                ))
-            except HTTPException as e:
-                await db.rollback()
-                raise
-            except Exception as e:
-                await db.rollback()
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Error al procesar imagen: {str(e)}"
-                )
-
-        # Manejo de imágenes existentes (si se envían URLs)
-        elif product_update.images is not None:
-            await db.execute(delete(ProductImage).where(ProductImage.product_id == product_id))
-            for img in product_update.images:
-                db.add(ProductImage(
-                    product_id=product_id,
-                    image_url=img.image_url,
-                    is_main=img.is_main
-                ))
-
-        # Actualizar tallas
-        if product_update.tallas is not None:
-            await db.execute(delete(ProductSize).where(ProductSize.product_id == product_id))
-            for talla in product_update.tallas:
-                db.add(ProductSize(product_id=product_id, name=talla.name))
-
-        # Actualizar colores
-        if product_update.colores is not None:
-            await db.execute(delete(ProductColor).where(ProductColor.product_id == product_id))
-            for color in product_update.colores:
-                db.add(ProductColor(product_id=product_id, name=color.name))
-
-        # Actualizar campos principales
-        update_fields = {
-            "name": product_update.nombre_producto or product.name,
-            "description": product_update.descripcion or product.description,
-            "price": product_update.precio or product.price,
-            "category_id": category_id,
-            "stock": product_update.stock or product.stock
-        }
+        # Generar nombre único
+        file_ext = Path(file.filename).suffix
+        file_name = f"{product_id}_{uuid.uuid4()}{file_ext}"
         
-        for field, value in update_fields.items():
-            setattr(product, field, value)
+        # Leer contenido
+        file_content = await file.read()
         
-        product.updated_at = datetime.utcnow()
-        
-        try:
-            await db.commit()
-            await db.refresh(product)
-        except Exception as e:
-            await db.rollback()
-            raise HTTPException(
-                status_code=500,
-                detail=f"Error al guardar en base de datos: {str(e)}"
-            )
-
-        return JSONResponse(
-            content={"detail": format_product_response(product)},
-            status_code=200
+        # Subir archivo - FORMA CORRECTA
+        res = supabase.storage.from_("productimages").upload(
+            path=file_name,
+            file=file_content,
+            file_options={
+                "content-type": file.content_type
+            }
         )
-    
-    except HTTPException:
-        raise
+        
+        # Verificar errores
+        if hasattr(res, 'error') and res.error:
+            raise Exception(f"Error Supabase: {res.error.message}")
+        
+        # Obtener URL pública
+        return supabase.storage.from_("productimages").get_public_url(file_name)
+        
     except Exception as e:
-        await db.rollback()
         raise HTTPException(
-            status_code=500,
-            detail=f"Error inesperado al actualizar producto: {str(e)}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al subir imagen: {str(e)}"
         )
-    
     
 @router.delete("/products/{product_id}", status_code=204)
 async def delete_product(product_id: int, db: AsyncSession = Depends(get_db)):
