@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Form, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import Form, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import delete, update
@@ -26,7 +27,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ====================== MODELOS PYDANTIC ======================
+# ====================== PYDANTIC ======================
 
 class ImageSchema(BaseModel):
     id: Optional[int] = None
@@ -39,18 +40,6 @@ class SizeSchema(BaseModel):
 class ColorSchema(BaseModel):
     name: str
 
-class ProductBase(BaseModel):
-    name: str
-    description: Optional[str] = None
-    price: float
-    category_id: int
-    stock: int = 0
-
-class ProductCreate(ProductBase):
-    images: List[ImageSchema] = []
-    tallas: List[SizeSchema] = []
-    colores: List[ColorSchema] = []
-
 class ProductUpdate(BaseModel):
     nombre_producto: Optional[str] = None
     id_categoria: Optional[str] = None
@@ -60,7 +49,7 @@ class ProductUpdate(BaseModel):
     tallas: Optional[List[SizeSchema]] = None
     colores: Optional[List[ColorSchema]] = None
     images: Optional[List[ImageSchema]] = None
-    
+
     class Config:
         extra = "ignore"
 
@@ -73,7 +62,7 @@ class ProductOut(BaseModel):
     imagen: List[dict]
     tallas: List[dict]
     colores: List[dict]
-    category: int  # Mantenemos solo el ID como espera el frontend
+    category: int
     stock: int
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -81,7 +70,7 @@ class ProductOut(BaseModel):
     class Config:
         from_attributes = True
 
-# ====================== FUNCIONES AUXILIARES ======================
+# ====================== AUXILIARES ======================
 
 async def get_product_or_404(db: AsyncSession, product_id: int):
     result = await db.execute(
@@ -96,16 +85,12 @@ async def get_product_or_404(db: AsyncSession, product_id: int):
     )
     product = result.unique().scalar_one_or_none()
     if not product:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Producto no encontrado"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Producto no encontrado")
     return product
 
 def format_product_response(product: Product):
-    # Ordenar imágenes para que la principal sea la primera
     imagenes_ordenadas = sorted(
-        product.images, 
+        product.images,
         key=lambda x: (not x.is_main, x.created_at)
     ) if product.images else []
 
@@ -122,7 +107,6 @@ def format_product_response(product: Product):
     tallas_formateadas = [{"name": s.name} for s in product.sizes] if product.sizes else []
     colores_formateadas = [{"name": c.name} for c in product.colors] if product.colors else []
 
-    # Formato compatible con el frontend - solo el ID de categoría
     return {
         "id": product.id,
         "id_producto": str(product.id),
@@ -132,23 +116,19 @@ def format_product_response(product: Product):
         "imagen": imagenes_formateadas,
         "tallas": tallas_formateadas,
         "colores": colores_formateadas,
-        "category": product.category_id,  # Solo el ID como espera el frontend
+        # <-- Devuelve solo el ID (como estabas usando en frontend)
+        "category": product.category_id,
         "stock": product.stock,
         "created_at": product.created_at.isoformat() if product.created_at else None,
         "updated_at": product.updated_at.isoformat() if product.updated_at else None
     }
 
 async def upload_to_supabase_storage(file: UploadFile, product_id: int) -> str:
-    """Sube un archivo a Supabase Storage y retorna la URL pública"""
+    """Sube un archivo a Supabase Storage y retorna la URL pública (string)."""
     try:
-        # Generar nombre único para el archivo
         file_ext = Path(file.filename).suffix
         file_name = f"{product_id}_{uuid.uuid4()}{file_ext}"
-        
-        # Leer el contenido del archivo
         file_content = await file.read()
-        
-        # Subir a Supabase Storage
         res = supabase.storage.from_("productimages").upload(
             path=file_name,
             file=file_content,
@@ -157,22 +137,34 @@ async def upload_to_supabase_storage(file: UploadFile, product_id: int) -> str:
                 "x-upsert": "true"
             }
         )
-        
-        # Verificar si hubo error en la subida
-        if hasattr(res, 'error') and res.error:
-            raise Exception(f"Error al subir imagen: {res.error.message}")
-        
-        # Obtener URL pública
-        url = supabase.storage.from_("productimages").get_public_url(file_name)
+        # get_public_url puede devolver dict dependiendo de la versión
+        public = supabase.storage.from_("productimages").get_public_url(file_name)
+        # extraer string si es dict
+        if isinstance(public, dict):
+            url = public.get("publicUrl") or public.get("public_url") or public.get("url")
+        else:
+            url = public
+        if not url:
+            raise Exception("No se pudo obtener URL pública de Supabase")
         return url
-        
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al subir imagen: {str(e)}"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error al subir imagen: {str(e)}")
 
-# ====================== ENDPOINTS DE PRODUCTOS ======================
+async def extract_files_from_form(form, keys: List[str]) -> List[UploadFile]:
+    """Dado un FormData y una lista de posibles keys, devuelve lista de UploadFile encontradas."""
+    files: List[UploadFile] = []
+    # starlette.datastructures.FormData soporta getlist
+    for key in keys:
+        try:
+            list_files = form.getlist(key)
+        except Exception:
+            list_files = []
+        for f in list_files:
+            if hasattr(f, "filename"):
+                files.append(f)
+    return files
+
+# ====================== ENDPOINTS ======================
 
 @router.get("/products", response_class=JSONResponse)
 async def read_products(skip: int = 0, limit: int = 100, db: AsyncSession = Depends(get_db)):
@@ -194,25 +186,6 @@ async def read_products(skip: int = 0, limit: int = 100, db: AsyncSession = Depe
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al obtener productos: {str(e)}")
 
-@router.get("/products/featured", response_class=JSONResponse)
-async def get_featured_products(db: AsyncSession = Depends(get_db)):
-    try:
-        result = await db.execute(
-            select(Product)
-            .options(
-                joinedload(Product.images),
-                joinedload(Product.category),
-                joinedload(Product.sizes),
-                joinedload(Product.colors)
-            )
-            .order_by(Product.created_at.desc())
-            .limit(8)
-        )
-        products = result.unique().scalars().all()
-        return JSONResponse(content={"detail": [format_product_response(p) for p in products]}, status_code=200)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 @router.get("/products/{product_id}", response_class=JSONResponse)
 async def read_product(product_id: int, db: AsyncSession = Depends(get_db)):
     try:
@@ -224,87 +197,94 @@ async def read_product(product_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Error al obtener producto: {str(e)}")
 
 @router.post("/products", response_class=JSONResponse, status_code=201)
-async def create_product(
-    nombre_producto: str = Form(...),
-    id_categoria: str = Form(...),
-    descripcion: Optional[str] = Form(None),
-    precio: float = Form(...),
-    stock: int = Form(0),
-    tallas: str = Form("[]"),
-    colores: str = Form("[]"),
-    imagenes_producto: List[UploadFile] = File([]),
-    db: AsyncSession = Depends(get_db)
-):
+async def create_product(request: Request, db: AsyncSession = Depends(get_db)):
+    """
+    Acepta multipart/form-data con campos:
+    - nombre_producto, id_categoria, descripcion, precio, stock, tallas (JSON string), colores (JSON string)
+    - archivos de imagen (cualquier key: 'imagenes_producto', 'imagen_producto', etc.)
+    """
     try:
-        # Parsear los datos JSON de tallas y colores
+        form = await request.form()
+
+        # extraer campos (acepta id_categoria como "category:1" o "1")
+        nombre_producto = form.get("nombre_producto") or ""
+        id_categoria = form.get("id_categoria") or form.get("id_categoria") or ""
+        descripcion = form.get("descripcion") or None
+        precio = form.get("precio") or form.get("precio") or 0
+        stock = form.get("stock") or 0
+        tallas_raw = form.get("tallas") or "[]"
+        colores_raw = form.get("colores") or "[]"
+
+        # parse tallas y colores
         try:
-            tallas_list = json.loads(tallas)
-            colores_list = json.loads(colores)
+            tallas_list = json.loads(tallas_raw)
+            colores_list = json.loads(colores_raw)
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Formato inválido para tallas o colores")
-        
-        # Validar número de imágenes
-        if len(imagenes_producto) > 4:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No se pueden subir más de 4 imágenes por producto"
-            )
 
-        # Convertir id_categoria a int
-        if id_categoria.startswith("category:"):
+        # obtener archivos (se buscan varias keys posibles)
+        files = await extract_files_from_form(form, ["imagenes_producto", "imagen_producto", "files", "images"])
+
+        if len(files) > 4:
+            raise HTTPException(status_code=400, detail="No se pueden subir más de 4 imágenes por producto")
+
+        # normalizar categoría
+        if isinstance(id_categoria, str) and id_categoria.startswith("category:"):
             category_id = int(id_categoria.split(":")[1])
         else:
-            raise HTTPException(status_code=400, detail="Formato inválido para id_categoria")
+            try:
+                category_id = int(id_categoria)
+            except Exception:
+                raise HTTPException(status_code=400, detail="Formato inválido para id_categoria")
 
-        # Verificar si la categoría existe
-        category = await db.execute(select(Category).where(Category.id == category_id))
-        if not category.scalar_one_or_none():
+        # verificar categoría
+        category_q = await db.execute(select(Category).where(Category.id == category_id))
+        if not category_q.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Categoría no encontrada")
 
-        # Verificar si el producto ya existe
+        # verificar nombre único
         existing_product = await db.execute(select(Product).where(Product.name == nombre_producto))
         if existing_product.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Ya existe un producto con este nombre")
 
-        # Crear el producto
+        # crear producto
         new_product = Product(
             name=nombre_producto,
             description=descripcion,
-            price=precio,
+            price=float(precio),
             category_id=category_id,
-            stock=stock
+            stock=int(stock)
         )
         db.add(new_product)
-        await db.commit()
-        await db.refresh(new_product)
+        await db.flush()  # necesitamos id antes de subir imágenes
 
-        # Subir imágenes (máximo 4)
-        for i, imagen in enumerate(imagenes_producto[:4]):
+        # subir imágenes (hasta 4)
+        for i, imagen in enumerate(files[:4]):
             image_url = await upload_to_supabase_storage(imagen, new_product.id)
             db.add(ProductImage(
                 product_id=new_product.id,
                 image_url=image_url,
-                is_main=(i == 0)  # La primera imagen es la principal
+                is_main=(i == 0)
             ))
 
-        # Guardar tallas
+        # tallas
         for talla in tallas_list:
-            db.add(ProductSize(
-                product_id=new_product.id,
-                name=talla.get("name")
-            ))
+            name = talla.get("name") if isinstance(talla, dict) else str(talla)
+            db.add(ProductSize(product_id=new_product.id, name=name))
 
-        # Guardar colores
+        # colores
         for color in colores_list:
-            db.add(ProductColor(
-                product_id=new_product.id,
-                name=color.get("name")
-            ))
+            if isinstance(color, dict):
+                name = color.get("name")
+            else:
+                name = str(color)
+            db.add(ProductColor(product_id=new_product.id, name=name))
 
         await db.commit()
         await db.refresh(new_product)
 
         return JSONResponse(content={"detail": format_product_response(new_product)}, status_code=201)
+
     except HTTPException:
         raise
     except Exception as e:
@@ -312,117 +292,110 @@ async def create_product(
         raise HTTPException(status_code=500, detail=f"Error al crear producto: {str(e)}")
 
 @router.put("/products/{product_id}", response_class=JSONResponse)
-async def update_product(
-    product_id: int,
-    data: str = Form(...),
-    nuevas_imagenes: List[UploadFile] = File([]),
-    db: AsyncSession = Depends(get_db)
-):
+async def update_product(product_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    """
+    Maneja actualización: espera 'data' (JSON string) en form y archivos en cualquier key como 'imagen_producto' o 'nuevas_imagenes'.
+    """
     try:
-        # Parsear el JSON string a un diccionario
+        form = await request.form()
+        data_raw = form.get("data") or form.get("producto") or "{}"
         try:
-            product_data = json.loads(data)
+            product_data = json.loads(data_raw)
             product_update = ProductUpdate(**product_data)
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid JSON data")
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Datos inválidos: {str(e)}")
 
-        # Obtener el producto existente con sus imágenes
-        result = await db.execute(
-            select(Product)
-            .options(joinedload(Product.images))
-            .where(Product.id == product_id)
-        )
-        product = result.unique().scalar_one_or_none()
-        
-        if not product:
-            raise HTTPException(status_code=404, detail="Producto no encontrado")
+        # obtener producto con imágenes
+        product = await get_product_or_404(db, product_id)
 
-        # Procesar nuevas imágenes primero
+        # extraer archivos nuevos de posibles keys
+        nuevas_imagenes = await extract_files_from_form(form, ["nuevas_imagenes", "imagen_producto", "imagenes_producto", "images"])
+
+        # validar límite total
         if nuevas_imagenes:
-            # Verificar que no excedamos el límite de 4 imágenes
             total_imagenes = len(product.images) + len(nuevas_imagenes)
             if total_imagenes > 4:
-                raise HTTPException(
-                    status_code=400,
-                    detail="No se pueden tener más de 4 imágenes por producto"
-                )
-
-            # Subir nuevas imágenes
+                raise HTTPException(status_code=400, detail="No se pueden tener más de 4 imágenes por producto")
+            # subir nuevas
             for i, imagen in enumerate(nuevas_imagenes):
                 image_url = await upload_to_supabase_storage(imagen, product_id)
-                nueva_imagen = ProductImage(
-                    product_id=product_id,
-                    image_url=image_url,
-                    is_main=(i == 0 and not any(img.is_main for img in product.images))
-                )
-                db.add(nueva_imagen)
+                is_main_flag = False
+                # si no hay imagen principal existente, la primera nueva se convierte en principal
+                if not any(img.is_main for img in product.images) and i == 0:
+                    is_main_flag = True
+                new_img = ProductImage(product_id=product_id, image_url=image_url, is_main=is_main_flag)
+                db.add(new_img)
                 await db.flush()
 
-        # Manejar imágenes existentes si se proporcionan en el JSON
+        # si en el JSON vienen imágenes con ids -> actualizar is_main
         if product_update.images is not None:
-            # Actualizar las imágenes existentes
             for img_data in product_update.images:
-                if img_data.id:  # Si tiene ID, es una imagen existente
+                if getattr(img_data, "id", None) is not None:
                     await db.execute(
                         update(ProductImage)
                         .where(ProductImage.id == img_data.id)
-                        .values(is_main=img_data.is_main)
+                        .values(is_main=bool(img_data.is_main))
                     )
 
-        # Actualizar otros campos del producto
+        # actualizar tallas y colores si vienen 
+        if product_update.tallas is not None:
+            # eliminar tallas existentes y volver a crear 
+            await db.execute(delete(ProductSize).where(ProductSize.product_id == product_id))
+            for talla in product_update.tallas:
+                db.add(ProductSize(product_id=product_id, name=talla.name))
+
+        if product_update.colores is not None:
+            await db.execute(delete(ProductColor).where(ProductColor.product_id == product_id))
+            for color in product_update.colores:
+                db.add(ProductColor(product_id=product_id, name=color.name))
+
+        # otros campos
         if product_update.nombre_producto:
             product.name = product_update.nombre_producto
         if product_update.descripcion:
             product.description = product_update.descripcion
-        if product_update.precio:
+        if product_update.precio is not None:
             product.price = product_update.precio
         if product_update.stock is not None:
             product.stock = product_update.stock
         if product_update.id_categoria:
-            product.category_id = int(product_update.id_categoria.split(":")[1])
+            # acepta "category:1" o "1"
+            cid = product_update.id_categoria
+            if isinstance(cid, str) and cid.startswith("category:"):
+                product.category_id = int(cid.split(":")[1])
+            else:
+                product.category_id = int(cid)
 
         product.updated_at = datetime.utcnow()
 
-        # Confirmar todos los cambios
         await db.commit()
         await db.refresh(product)
 
-        return JSONResponse(
-            content={"detail": format_product_response(product)},
-            status_code=200
-        )
-    
+        return JSONResponse(content={"detail": format_product_response(product)}, status_code=200)
+
     except HTTPException:
         raise
     except Exception as e:
         await db.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error inesperado al actualizar producto: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error inesperado al actualizar producto: {str(e)}")
 
 @router.delete("/products/{product_id}", status_code=204)
 async def delete_product(product_id: int, db: AsyncSession = Depends(get_db)):
     try:
-        # Primero eliminar las imágenes asociadas en Supabase Storage
         images = await db.execute(select(ProductImage).where(ProductImage.product_id == product_id))
         images = images.scalars().all()
-        
         for img in images:
             try:
-                # Extraer el nombre del archivo de la URL
                 file_name = img.image_url.split('/')[-1]
                 supabase.storage.from_("productimages").remove([file_name])
             except Exception as e:
                 print(f"Error al eliminar imagen de Supabase: {str(e)}")
-        
-        # Luego eliminar el producto y sus relaciones en la base de datos
+
         product = await get_product_or_404(db, product_id)
         await db.delete(product)
         await db.commit()
-        
         return Response(status_code=204)
     except HTTPException:
         raise
@@ -430,155 +403,63 @@ async def delete_product(product_id: int, db: AsyncSession = Depends(get_db)):
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al eliminar producto: {str(e)}")
 
-# ====================== ENDPOINTS ESPECÍFICOS PARA IMÁGENES ======================
-
+# Endpoints específicos para imágenes (se mantienen)
 @router.post("/products/{product_id}/images", status_code=201)
-async def add_product_images(
-    product_id: int,
-    images: List[UploadFile] = File(...),
-    db: AsyncSession = Depends(get_db)
-):
+async def add_product_images(product_id: int, images: List[UploadFile] = File(...), db: AsyncSession = Depends(get_db)):
     try:
-        # Verificar que el producto existe
         product = await get_product_or_404(db, product_id)
-        
-        # Obtener el número actual de imágenes
-        result = await db.execute(
-            select(ProductImage)
-            .where(ProductImage.product_id == product_id)
-        )
+        result = await db.execute(select(ProductImage).where(ProductImage.product_id == product_id))
         current_images = result.scalars().all()
-        
-        # Validar que no se exceda el límite de 4 imágenes
         if len(current_images) + len(images) > 4:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"No se pueden tener más de 4 imágenes. Actual: {len(current_images)}, Intentando agregar: {len(images)}"
-            )
-        
-        # Subir nuevas imágenes
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"No se pueden tener más de 4 imágenes. Actual: {len(current_images)}, Intentando agregar: {len(images)}")
         for image in images:
             image_url = await upload_to_supabase_storage(image, product_id)
-            db.add(ProductImage(
-                product_id=product_id,
-                image_url=image_url,
-                is_main=False  # Por defecto no es principal
-            ))
-        
+            db.add(ProductImage(product_id=product_id, image_url=image_url, is_main=False))
         await db.commit()
-        return JSONResponse(
-            content={"detail": "Imágenes agregadas correctamente"},
-            status_code=201
-        )
+        return JSONResponse(content={"detail": "Imágenes agregadas correctamente"}, status_code=201)
     except HTTPException:
         raise
     except Exception as e:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al agregar imágenes: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error al agregar imágenes: {str(e)}")
 
 @router.delete("/products/{product_id}/images/{image_id}", status_code=204)
-async def delete_product_image(
-    product_id: int,
-    image_id: int,
-    db: AsyncSession = Depends(get_db)
-):
+async def delete_product_image(product_id: int, image_id: int, db: AsyncSession = Depends(get_db)):
     try:
-        # Verificar que el producto existe
         await get_product_or_404(db, product_id)
-        
-        # Obtener la imagen específica
-        result = await db.execute(
-            select(ProductImage)
-            .where(
-                ProductImage.id == image_id,
-                ProductImage.product_id == product_id
-            )
-        )
+        result = await db.execute(select(ProductImage).where(ProductImage.id == image_id, ProductImage.product_id == product_id))
         image = result.scalar_one_or_none()
-        
         if not image:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Imagen no encontrada para este producto"
-            )
-        
-        # Eliminar de Supabase Storage
+            raise HTTPException(status_code=404, detail="Imagen no encontrada para este producto")
         try:
             file_name = image.image_url.split('/')[-1]
             supabase.storage.from_("productimages").remove([file_name])
         except Exception as e:
             print(f"Error al eliminar imagen de Supabase: {str(e)}")
-        
-        # Eliminar de la base de datos
-        await db.execute(
-            delete(ProductImage)
-            .where(
-                ProductImage.id == image_id,
-                ProductImage.product_id == product_id
-            )
-        )
+        await db.execute(delete(ProductImage).where(ProductImage.id == image_id, ProductImage.product_id == product_id))
         await db.commit()
-        
         return Response(status_code=204)
     except HTTPException:
         raise
     except Exception as e:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al eliminar imagen: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error al eliminar imagen: {str(e)}")
 
 @router.patch("/products/{product_id}/images/{image_id}/set-main", status_code=200)
-async def set_main_image(
-    product_id: int,
-    image_id: int,
-    db: AsyncSession = Depends(get_db)
-):
+async def set_main_image(product_id: int, image_id: int, db: AsyncSession = Depends(get_db)):
     try:
-        # Verificar que el producto existe
         await get_product_or_404(db, product_id)
-        
-        # Obtener la imagen específica
-        result = await db.execute(
-            select(ProductImage)
-            .where(
-                ProductImage.id == image_id,
-                ProductImage.product_id == product_id
-            )
-        )
+        result = await db.execute(select(ProductImage).where(ProductImage.id == image_id, ProductImage.product_id == product_id))
         image = result.scalar_one_or_none()
-        
         if not image:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Imagen no encontrada para este producto"
-            )
-        
-        # Quitar el estado de principal de todas las imágenes del producto
-        await db.execute(
-            update(ProductImage)
-            .where(ProductImage.product_id == product_id)
-            .values(is_main=False)
-        )
-        
-        # Establecer esta imagen como principal
+            raise HTTPException(status_code=404, detail="Imagen no encontrada para este producto")
+        await db.execute(update(ProductImage).where(ProductImage.product_id == product_id).values(is_main=False))
         image.is_main = True
         db.add(image)
         await db.commit()
-        
-        return JSONResponse(
-            content={"detail": "Imagen principal actualizada correctamente"},
-            status_code=200
-        )
+        return JSONResponse(content={"detail": "Imagen principal actualizada correctamente"}, status_code=200)
     except HTTPException:
         raise
     except Exception as e:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al actualizar imagen principal: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error al actualizar imagen principal: {str(e)}")
