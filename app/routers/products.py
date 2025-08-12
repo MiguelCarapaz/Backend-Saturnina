@@ -138,31 +138,25 @@ def format_product_response(product: Product):
     }
 
 async def upload_to_supabase_storage(file: UploadFile, product_id: int) -> str:
-    """Sube un archivo a Supabase Storage y retorna la URL pública"""
     try:
-        # Generar un nombre único para el archivo
-        file_ext = Path(file.filename).suffix
-        file_name = f"{product_id}_{uuid.uuid4()}{file_ext}"
-        
-        # Leer el contenido del archivo
+        file_name = f"{product_id}_{uuid.uuid4()}{Path(file.filename).suffix}"
         file_content = await file.read()
         
-        # Subir a Supabase Storage
+        # Fuerza el uso de autenticación con cabecera
+        headers = {
+            "Authorization": f"Bearer {os.getenv('SUPABASE_KEY')}",
+            "Content-Type": file.content_type
+        }
+        
         res = supabase.storage.from_("productimages").upload(
             file_name,
             file_content,
-            {"content-type": file.content_type}
+            headers=headers  # Envía la autenticación
         )
         
-        # Obtener URL pública
-        url = supabase.storage.from_("productimages").get_public_url(file_name)
-        
-        return url
+        return supabase.storage.from_("productimages").get_public_url(file_name)
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al subir la imagen: {str(e)}"
-        )
+        raise HTTPException(500, f"Error subiendo imagen: {str(e)}")
 
 # ====================== ENDPOINTS DE PRODUCTOS ======================
 
