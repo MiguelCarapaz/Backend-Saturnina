@@ -73,7 +73,7 @@ class ProductOut(BaseModel):
     imagen: List[dict]
     tallas: List[dict]
     colores: List[dict]
-    category: int
+    category: int  # Mantenemos solo el ID como espera el frontend
     stock: int
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -122,7 +122,7 @@ def format_product_response(product: Product):
     tallas_formateadas = [{"name": s.name} for s in product.sizes] if product.sizes else []
     colores_formateadas = [{"name": c.name} for c in product.colors] if product.colors else []
 
-    # Formato original de categorías (solo ID)
+    # Formato compatible con el frontend - solo el ID de categoría
     return {
         "id": product.id,
         "id_producto": str(product.id),
@@ -132,7 +132,7 @@ def format_product_response(product: Product):
         "imagen": imagenes_formateadas,
         "tallas": tallas_formateadas,
         "colores": colores_formateadas,
-        "category": product.category_id,  # Solo el ID como estaba originalmente
+        "category": product.category_id,  # Solo el ID como espera el frontend
         "stock": product.stock,
         "created_at": product.created_at.isoformat() if product.created_at else None,
         "updated_at": product.updated_at.isoformat() if product.updated_at else None
@@ -170,20 +170,6 @@ async def upload_to_supabase_storage(file: UploadFile, product_id: int) -> str:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al subir imagen: {str(e)}"
-        )
-
-async def validate_image_count(db: AsyncSession, product_id: int, new_images_count: int):
-    """Valida que no se exceda el límite de 4 imágenes por producto"""
-    result = await db.execute(
-        select(ProductImage)
-        .where(ProductImage.product_id == product_id)
-    )
-    existing_images = result.scalars().all()
-    
-    if len(existing_images) + new_images_count > 4:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No se pueden tener más de 4 imágenes por producto"
         )
 
 # ====================== ENDPOINTS DE PRODUCTOS ======================
