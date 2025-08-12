@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Form, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from app.database import get_db
 from app.models.product import Product, ProductImage, ProductSize, ProductColor
 from app.models.category import Category
@@ -122,6 +122,7 @@ def format_product_response(product: Product):
     tallas_formateadas = [{"name": s.name} for s in product.sizes] if product.sizes else []
     colores_formateadas = [{"name": c.name} for c in product.colors] if product.colors else []
 
+    # Formato original de categorías (solo ID)
     return {
         "id": product.id,
         "id_producto": str(product.id),
@@ -131,7 +132,7 @@ def format_product_response(product: Product):
         "imagen": imagenes_formateadas,
         "tallas": tallas_formateadas,
         "colores": colores_formateadas,
-        "category": product.category.id if product.category else product.category_id,
+        "category": product.category_id,  # Solo el ID como estaba originalmente
         "stock": product.stock,
         "created_at": product.created_at.isoformat() if product.created_at else None,
         "updated_at": product.updated_at.isoformat() if product.updated_at else None
@@ -292,7 +293,7 @@ async def create_product(
         await db.refresh(new_product)
 
         # Subir imágenes (máximo 4)
-        for i, imagen in enumerate(imagenes_producto[:4]):  # Aseguramos que solo se procesen 4
+        for i, imagen in enumerate(imagenes_producto[:4]):
             image_url = await upload_to_supabase_storage(imagen, new_product.id)
             db.add(ProductImage(
                 product_id=new_product.id,
@@ -341,117 +342,66 @@ async def update_product(
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Datos inválidos: {str(e)}")
 
-        # Obtener el producto existente
-        product = await get_product_or_404(db, product_id)
+        # Obtener el producto existente con sus imágenes
+        result = await db.execute(
+            select(Product)
+            .options(joinedload(Product.images))
+            .where(Product.id == product_id)
+        )
+        product = result.unique().scalar_one_or_none()
         
-        # Convertir id_categoria si es necesario
-        category_id = (int(product_update.id_categoria.split(":")[1]) 
-                      if product_update.id_categoria and product_update.id_categoria.startswith("category:")
-                      else product.category_id)
+        if not product:
+            raise HTTPException(status_code=404, detail="Producto no encontrado")
 
-        # Validar número total de imágenes no exceda 4
-        existing_images_count = len(product.images)
-        nuevas_imagenes_count = len(nuevas_imagenes)
-        
-        if product_update.images is not None:
-            # Si se envían imágenes en el JSON, contamos las que no son nuevas
-            existing_images_to_keep = len([img for img in product_update.images 
-                                         if not any(ni.filename in img.image_url for ni in nuevas_imagenes)])
-        else:
-            # Si no se envían imágenes en el JSON, mantenemos todas las existentes
-            existing_images_to_keep = existing_images_count
-            
-        total_images = existing_images_to_keep + nuevas_imagenes_count
-        if total_images > 4:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"No se pueden tener más de 4 imágenes. Actual: {total_images}"
-            )
-
-        # Procesar nuevas imágenes subidas
-        for i, imagen in enumerate(nuevas_imagenes[:4]):  # Aseguramos que solo se procesen 4
-            image_url = await upload_to_supabase_storage(imagen, product_id)
-            db.add(ProductImage(
-                product_id=product_id,
-                image_url=image_url,
-                is_main=(i == 0 and not any(img.is_main for img in product.images))
-            ))
-
-        # Manejar URLs de imágenes existentes si se proporcionan
-        if product_update.images is not None:
-            # Primero eliminar solo las imágenes que no están en la lista actualizada
-            existing_image_urls = {img.image_url for img in product_update.images}
-            await db.execute(
-                delete(ProductImage)
-                .where(
-                    ProductImage.product_id == product_id,
-                    ProductImage.image_url.notin_(existing_image_urls)
+        # Procesar nuevas imágenes primero
+        if nuevas_imagenes:
+            # Verificar que no excedamos el límite de 4 imágenes
+            total_imagenes = len(product.images) + len(nuevas_imagenes)
+            if total_imagenes > 4:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No se pueden tener más de 4 imágenes por producto"
                 )
-            )
-            
-            # Actualizar las imágenes existentes (por ejemplo, cambiar is_main)
+
+            # Subir nuevas imágenes
+            for i, imagen in enumerate(nuevas_imagenes):
+                image_url = await upload_to_supabase_storage(imagen, product_id)
+                nueva_imagen = ProductImage(
+                    product_id=product_id,
+                    image_url=image_url,
+                    is_main=(i == 0 and not any(img.is_main for img in product.images))
+                )
+                db.add(nueva_imagen)
+                await db.flush()
+
+        # Manejar imágenes existentes si se proporcionan en el JSON
+        if product_update.images is not None:
+            # Actualizar las imágenes existentes
             for img_data in product_update.images:
-                # Buscar si la imagen ya existe
-                existing_img = await db.execute(
-                    select(ProductImage)
-                    .where(
-                        ProductImage.product_id == product_id,
-                        ProductImage.image_url == img_data.image_url
+                if img_data.id:  # Si tiene ID, es una imagen existente
+                    await db.execute(
+                        update(ProductImage)
+                        .where(ProductImage.id == img_data.id)
+                        .values(is_main=img_data.is_main)
                     )
-                )
-                existing_img = existing_img.scalar_one_or_none()
-                
-                if existing_img:
-                    existing_img.is_main = img_data.is_main
-                else:
-                    # Si es una URL nueva (no subida como archivo)
-                    db.add(ProductImage(
-                        product_id=product_id,
-                        image_url=img_data.image_url,
-                        is_main=img_data.is_main
-                    ))
 
-        # Actualizar tallas si se enviaron
-        if product_update.tallas is not None:
-            await db.execute(delete(ProductSize).where(ProductSize.product_id == product_id))
-            for talla in product_update.tallas:
-                db.add(ProductSize(
-                    product_id=product_id,
-                    name=talla.name
-                ))
+        # Actualizar otros campos del producto
+        if product_update.nombre_producto:
+            product.name = product_update.nombre_producto
+        if product_update.descripcion:
+            product.description = product_update.descripcion
+        if product_update.precio:
+            product.price = product_update.precio
+        if product_update.stock is not None:
+            product.stock = product_update.stock
+        if product_update.id_categoria:
+            product.category_id = int(product_update.id_categoria.split(":")[1])
 
-        # Actualizar colores si se enviaron
-        if product_update.colores is not None:
-            await db.execute(delete(ProductColor).where(ProductColor.product_id == product_id))
-            for color in product_update.colores:
-                db.add(ProductColor(
-                    product_id=product_id,
-                    name=color.name
-                ))
-
-        # Actualizar campos principales
-        update_fields = {
-            "name": product_update.nombre_producto or product.name,
-            "description": product_update.descripcion or product.description,
-            "price": product_update.precio or product.price,
-            "category_id": category_id,
-            "stock": product_update.stock or product.stock
-        }
-        
-        for field, value in update_fields.items():
-            setattr(product, field, value)
-        
         product.updated_at = datetime.utcnow()
-        
-        try:
-            await db.commit()
-            await db.refresh(product)
-        except Exception as e:
-            await db.rollback()
-            raise HTTPException(
-                status_code=500,
-                detail=f"Error al guardar en base de datos: {str(e)}"
-            )
+
+        # Confirmar todos los cambios
+        await db.commit()
+        await db.refresh(product)
 
         return JSONResponse(
             content={"detail": format_product_response(product)},
