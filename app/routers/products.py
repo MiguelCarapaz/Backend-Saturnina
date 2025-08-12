@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, Response
 from datetime import datetime
 from sqlalchemy.orm import joinedload
 import json
+import anyio
 import uuid
 from pathlib import Path
 from supabase import create_client, Client
@@ -122,32 +123,56 @@ def format_product_response(product: Product):
     }
 
 async def upload_to_supabase_storage(file: UploadFile, product_id: int) -> str:
-    """Sube un archivo a Supabase Storage y retorna la URL pública (string)."""
+    """
+    Sube el contenido del UploadFile a Supabase Storage usando un thread para evitar
+    I/O bloqueante dentro del loop async (evita el error greenlet_spawn).
+    Retorna la URL pública (string).
+    """
     try:
-        file_ext = Path(file.filename).suffix
+        file_ext = Path(file.filename).suffix or ""
         file_name = f"{product_id}_{uuid.uuid4()}{file_ext}"
-        file_content = await file.read()
-        res = supabase.storage.from_("productimages").upload(
-            path=file_name,
-            file=file_content,
-            file_options={
-                "content-type": file.content_type,
-                "x-upsert": "true"
-            }
-        )
-        # get_public_url puede devolver dict o string según versión
-        public = supabase.storage.from_("productimages").get_public_url(file_name)
-        if isinstance(public, dict):
-            # posibles claves
-            url = public.get("publicUrl") or public.get("public_url") or public.get("url")
-        else:
-            url = public
 
-        if not url:
-            raise Exception("No se pudo obtener URL pública de Supabase")
+        file_content = await file.read()
+
+        # función sincrónica que ejecuta la subida y obtiene la URL
+        def sync_upload_and_get_url():
+            # Subida síncrona a Supabase
+            res = supabase.storage.from_("productimages").upload(
+                path=file_name,
+                file=file_content,
+                file_options={
+                    "content-type": file.content_type or "application/octet-stream",
+                    "x-upsert": "true"
+                }
+            )
+            public = supabase.storage.from_("productimages").get_public_url(file_name)
+
+            if isinstance(public, dict):
+                url = public.get("publicUrl") or public.get("public_url") or public.get("url")
+            else:
+                url = public
+
+            if not url:
+                err_msg = None
+                try:
+                    if hasattr(res, "error") and res.error:
+                        err_msg = getattr(res.error, "message", str(res.error))
+                except Exception:
+                    err_msg = None
+                raise Exception(f"No se pudo obtener URL pública (supabase). {err_msg or ''}")
+            return url
+
+        url = await anyio.to_thread.run_sync(sync_upload_and_get_url)
         return url
+
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error al subir imagen: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al subir imagen: {str(e)}"
+        )
+    
 
 async def extract_files_from_form(form, keys: List[str]) -> List[UploadFile]:
     """Dado un FormData y una lista de posibles keys, devuelve lista de UploadFile encontradas."""
