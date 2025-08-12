@@ -291,7 +291,6 @@ async def create_product(request: Request, db: AsyncSession = Depends(get_db)):
                 except Exception:
                     colores_list = []
 
-            # extract possible file keys
             for k in ("imagenes_producto", "imagen_producto", "files", "images", "nuevas_imagenes"):
                 try:
                     lst = form.getlist(k)
@@ -339,7 +338,6 @@ async def create_product(request: Request, db: AsyncSession = Depends(get_db)):
         if existing.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Ya existe un producto con este nombre")
 
-        # === Crear producto y confirmar inmediatamente ===
         new_product = Product(
             name=nombre_producto,
             description=descripcion,
@@ -348,24 +346,22 @@ async def create_product(request: Request, db: AsyncSession = Depends(get_db)):
             stock=int(stock)
         )
         db.add(new_product)
-        await db.commit()       # persistimos el producto YA
+        await db.commit()
         await db.refresh(new_product)
         created = True
 
-        # === Subir imágenes fuera de la transacción crítica ===
         if files:
             for i, img in enumerate(files[:4]):
                 try:
                     url = await upload_to_supabase_storage(img, new_product.id)
                     db.add(ProductImage(product_id=new_product.id, image_url=url, is_main=(i == 0)))
                 except Exception as up_err:
-                    # guardamos la advertencia y seguimos (no hacemos rollback de la creación)
                     upload_warnings.append(str(up_err))
-            # hacemos commit de las filas ProductImage (si alguna se añadió)
-            await db.commit()
-            await db.refresh(new_product)
+            if db.new:
+                await db.commit()
+                await db.refresh(new_product)
 
-        # === Añadir tallas y colores (si vienen) ===
+        # Añadir tallas y colores 
         if tallas_list:
             for talla in tallas_list:
                 if isinstance(talla, dict):
@@ -383,34 +379,33 @@ async def create_product(request: Request, db: AsyncSession = Depends(get_db)):
                 if name:
                     db.add(ProductColor(product_id=new_product.id, name=name))
 
-        await db.commit()
-        await db.refresh(new_product)
+        if db.new:
+            await db.commit()
 
-        # Si hubo warnings en subir imágenes, los incluimos en la respuesta
+        final_product = await get_product_or_404(db, new_product.id)
+
+        response_content = {"detail": format_product_response(final_product)}
         if upload_warnings:
-            return JSONResponse(
-                content={"detail": format_product_response(new_product), "warnings": upload_warnings},
-                status_code=201
-            )
+            response_content["warnings"] = upload_warnings
 
-        return JSONResponse(content={"detail": format_product_response(new_product)}, status_code=201)
+        return JSONResponse(content=response_content, status_code=201)
 
     except HTTPException:
-        # si el producto ya fue creado, devolvemos 201 con advertencia en vez de 500
         if created and new_product:
-            return JSONResponse(content={"detail": format_product_response(new_product), "warnings": ["Se produjo un error menor pero el producto fue creado."]}, status_code=201)
+            final_product = await get_product_or_404(db, new_product.id)
+            return JSONResponse(content={"detail": format_product_response(final_product), "warnings": ["Se produjo un error menor pero el producto fue creado."]}, status_code=201)
         raise
     except Exception as e:
-        # si el producto ya fue creado, no intentes rollback (ya se commitó) — devuelve 201 con warning
         if created and new_product:
-            return JSONResponse(content={"detail": format_product_response(new_product), "warnings": [str(e)]}, status_code=201)
-        # si NO fue creado, sí hacemos rollback y retornamos error 500
+            final_product = await get_product_or_404(db, new_product.id)
+            return JSONResponse(content={"detail": format_product_response(final_product), "warnings": [str(e)]}, status_code=201)
+        
         try:
             await db.rollback()
         except Exception:
             pass
         raise HTTPException(status_code=500, detail=f"Error al crear producto: {str(e)}")
-
+    
 @router.put("/products/{product_id}", response_class=JSONResponse)
 async def update_product(product_id: int, request: Request, db: AsyncSession = Depends(get_db)):
     try:
