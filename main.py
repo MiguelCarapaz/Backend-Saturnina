@@ -6,18 +6,21 @@ from app.routers import example, auth, user, products, orders_comments, category
 from app.routers.user import profile_router
 from app.database import get_db
 from fastapi.middleware.cors import CORSMiddleware
+from datetime import datetime
 
 app = FastAPI()
 
+# Configuración CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  
-    allow_credentials=False,  
+    allow_origins=["https://saturnina.vercel.app"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
-# 🔹 Routers
+# Routers
 app.include_router(example.router)
 app.include_router(auth.router)
 app.include_router(user.router)
