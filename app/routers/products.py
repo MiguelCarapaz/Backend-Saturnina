@@ -111,13 +111,20 @@ async def get_product_or_404(db: AsyncSession, product_id: int):
     return product
 
 def format_product_response(product: Product):
+    # Ordenar imágenes para que la principal sea la primera
+    imagenes_ordenadas = sorted(
+        product.images, 
+        key=lambda x: (not x.is_main, x.created_at)
+    ) if product.images else []
+
     imagenes_formateadas = [
         {
-            "secure_url": img.image_url,
-            "public_id": f"temp_{img.id}",
-            "main": img.is_main
-        } for img in product.images
-    ] if product.images else []
+            "id": img.id,
+            "url": img.image_url,
+            "is_main": img.is_main,
+            "created_at": img.created_at.isoformat() if img.created_at else None
+        } for img in imagenes_ordenadas
+    ]
 
     tallas_formateadas = [{"name": s.name} for s in product.sizes] if product.sizes else []
     colores_formateadas = [{"name": c.name} for c in product.colors] if product.colors else []
@@ -218,7 +225,7 @@ async def create_product(
     stock: int = Form(0),
     tallas: str = Form("[]"),
     colores: str = Form("[]"),
-    imagen_producto: Optional[UploadFile] = File(None),
+    imagen_producto: List[UploadFile] = File([]),
     db: AsyncSession = Depends(get_db)
 ):
     try:
@@ -257,14 +264,13 @@ async def create_product(
         await db.commit()
         await db.refresh(new_product)
 
-        # Subir imagen si se proporcionó
-        image_url = None
-        if imagen_producto:
-            image_url = await upload_to_supabase_storage(imagen_producto, new_product.id)
+        # Subir múltiples imágenes
+        for i, imagen in enumerate(imagen_producto):
+            image_url = await upload_to_supabase_storage(imagen, new_product.id)
             db.add(ProductImage(
                 product_id=new_product.id,
                 image_url=image_url,
-                is_main=True
+                is_main=(i == 0)  
             ))
 
         # Guardar tallas
@@ -329,7 +335,7 @@ async def upload_to_supabase_storage(file: UploadFile, product_id: int) -> str:
 async def update_product(
     product_id: int,
     data: str = Form(...),
-    imagen_producto: Optional[UploadFile] = File(None),
+    nuevas_imagenes: List[UploadFile] = File([]),  # Cambiado a lista de archivos
     db: AsyncSession = Depends(get_db)
 ):
     try:
@@ -350,34 +356,49 @@ async def update_product(
                       if product_update.id_categoria and product_update.id_categoria.startswith("category:")
                       else product.category_id)
 
-        # Procesar imagen si se proporcionó
-        if imagen_producto:
-            try:
-                image_url = await upload_to_supabase_storage(imagen_producto, product_id)
-                await db.execute(delete(ProductImage).where(ProductImage.product_id == product_id))
-                db.add(ProductImage(
-                    product_id=product_id,
-                    image_url=image_url,
-                    is_main=True
-                ))
-            except HTTPException as e:
-                await db.rollback()
-                raise
-            except Exception as e:
-                await db.rollback()
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Error al procesar imagen: {str(e)}"
+        # Procesar nuevas imágenes subidas
+        for i, imagen in enumerate(nuevas_imagenes):
+            image_url = await upload_to_supabase_storage(imagen, product_id)
+            db.add(ProductImage(
+                product_id=product_id,
+                image_url=image_url,
+                is_main=(i == 0 and not any(img.is_main for img in product.images))
+            )
+          )
+
+        # Manejar URLs de imágenes existentes si se proporcionan
+        if product_update.images is not None:
+            # Primero eliminar solo las imágenes que no están en la lista actualizada
+            existing_image_urls = {img.image_url for img in product_update.images}
+            await db.execute(
+                delete(ProductImage)
+                .where(
+                    ProductImage.product_id == product_id,
+                    ProductImage.image_url.notin_(existing_image_urls)
                 )
-        # O manejar URLs de imágenes existentes
-        elif product_update.images is not None:
-            await db.execute(delete(ProductImage).where(ProductImage.product_id == product_id))
-            for img in product_update.images:
-                db.add(ProductImage(
-                    product_id=product_id,
-                    image_url=img.image_url,
-                    is_main=img.is_main
-                ))
+            )
+            
+            # Actualizar las imágenes existentes
+            for img_data in product_update.images:
+                # Buscar si la imagen ya existe
+                existing_img = await db.execute(
+                    select(ProductImage)
+                    .where(
+                        ProductImage.product_id == product_id,
+                        ProductImage.image_url == img_data.image_url
+                    )
+                )
+                existing_img = existing_img.scalar_one_or_none()
+                
+                if existing_img:
+                    existing_img.is_main = img_data.is_main
+                else:
+                    # Si es una URL nueva 
+                    db.add(ProductImage(
+                        product_id=product_id,
+                        image_url=img_data.image_url,
+                        is_main=img_data.is_main
+                    ))
 
         # Actualizar tallas si se enviaron
         if product_update.tallas is not None:
