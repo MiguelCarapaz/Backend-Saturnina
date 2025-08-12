@@ -1,247 +1,146 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Path, Body
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from typing import List, Optional
-from pydantic import BaseModel
-from fastapi.responses import JSONResponse
-from datetime import datetime
+from sqlalchemy import update, delete
 from app.database import get_db
 from app.models.category import Category
+from pydantic import BaseModel
+from typing import Optional, List
+from datetime import datetime
 
-router = APIRouter(prefix="/category", tags=["categories"])
+router = APIRouter()
 
-# ====================== MODELOS PYDANTIC ======================
-
-class CategoryBase(BaseModel):
+class CategoryCreate(BaseModel):
     name: str
     description: Optional[str] = None
 
-class CategoryCreate(CategoryBase):
-    pass
-
-class CategoryUpdate(BaseModel):
-    name: Optional[str] = None
+class CategoryOut(BaseModel):
+    id: int
+    name: str
     description: Optional[str] = None
-
-class CategoryOut(CategoryBase):
-    id: str  # Formateado como "category:id" para frontend
-    created_at: datetime
+    created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
 
-# ====================== FUNCIONES AUXILIARES ======================
-
-async def get_category_or_404(db: AsyncSession, category_id: int):
-    result = await db.execute(select(Category).where(Category.id == category_id))
-    category = result.scalar_one_or_none()
-    if not category:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Categoría no encontrada"
-        )
-    return category
-
-def format_category_response(category: Category):
-    return {
-        "id": f"category:{category.id}",
-        "name": category.name,
-        "description": category.description,
-        "created_at": category.created_at.isoformat() if category.created_at else None,
-        "updated_at": category.updated_at.isoformat() if category.updated_at else None
-    }
-
-# ====================== ENDPOINTS DE CATEGORÍAS ======================
-
-@router.get("", response_class=JSONResponse)
-async def read_categories(
-    skip: int = 0,
-    limit: int = 100,
-    db: AsyncSession = Depends(get_db)
-):
+@router.get("/category", response_class=JSONResponse)
+async def read_categories(skip: int = 0, limit: int = 100, db: AsyncSession = Depends(get_db)):
+    """
+    Retorna la lista de categorías en formato:
+    { "detail": [ {id, name, description, created_at, updated_at}, ... ] }
+    (esto es lo que espera el frontend)
+    """
     try:
-        query = select(Category)
-            
-        result = await db.execute(
-            query.order_by(Category.id)
-            .offset(skip)
-            .limit(limit)
-        )
+        result = await db.execute(select(Category).order_by(Category.id).offset(skip).limit(limit))
         categories = result.scalars().all()
-        
-        response_data = [format_category_response(cat) for cat in categories]
-        
-        # Agregar opción "Todos" que espera el frontend
-        response_data.insert(0, {
-            "id": "category:todos",
-            "name": "Todos",
-            "description": "Todos los productos",
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": None
-        })
-        
-        return JSONResponse(
-            content={"detail": response_data},
-            status_code=200
-        )
-        
+        # Formatear lista
+        detail = [
+            {
+                "id": c.id,
+                "name": c.name,
+                "description": c.description,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+                "updated_at": c.updated_at.isoformat() if c.updated_at else None
+            } for c in categories
+        ]
+        return JSONResponse(content={"detail": detail}, status_code=200)
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al obtener categorías: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error al obtener categorías: {str(e)}")
 
-@router.get("/{category_id}", response_class=JSONResponse)
-async def read_category(
-    category_id: str,  # Acepta "todos" o ID numérico
-    db: AsyncSession = Depends(get_db)
-):
+@router.get("/category/{category_id}", response_class=JSONResponse)
+async def read_category(category_id: int = Path(..., gt=0), db: AsyncSession = Depends(get_db)):
     try:
-        if category_id == "todos":
-            return JSONResponse(
-                content={
-                    "detail": {
-                        "id": "category:todos",
-                        "name": "Todos",
-                        "description": "Todos los productos",
-                        "created_at": datetime.utcnow().isoformat(),
-                        "updated_at": None
-                    }
-                },
-                status_code=200
-            )
-            
-        category = await get_category_or_404(db, int(category_id))
-        return JSONResponse(
-            content={"detail": format_category_response(category)},
-            status_code=200
-        )
-        
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ID de categoría inválido"
-        )
+        result = await db.execute(select(Category).where(Category.id == category_id))
+        category = result.scalar_one_or_none()
+        if not category:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Categoría no encontrada")
+        detail = {
+            "id": category.id,
+            "name": category.name,
+            "description": category.description,
+            "created_at": category.created_at.isoformat() if category.created_at else None,
+            "updated_at": category.updated_at.isoformat() if category.updated_at else None
+        }
+        return JSONResponse(content={"detail": detail}, status_code=200)
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al obtener categoría: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error al obtener categoría: {str(e)}")
 
-@router.post("", response_class=JSONResponse, status_code=201)
-async def create_category(
-    category: CategoryCreate,
-    db: AsyncSession = Depends(get_db)
-):
+@router.post("/category", response_class=JSONResponse, status_code=201)
+async def create_category(payload: CategoryCreate = Body(...), db: AsyncSession = Depends(get_db)):
     try:
-        # Verificar nombre único
-        existing_cat = await db.execute(
-            select(Category).where(Category.name == category.name))
-        if existing_cat.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Ya existe una categoría con este nombre"
-            )
-            
-        new_category = Category(**category.dict())
-        db.add(new_category)
+        # validar nombre único (opcional)
+        q = await db.execute(select(Category).where(Category.name == payload.name))
+        if q.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Ya existe una categoría con ese nombre")
+
+        new_cat = Category(name=payload.name, description=payload.description)
+        db.add(new_cat)
         await db.commit()
-        await db.refresh(new_category)
-        
-        return JSONResponse(
-            content={"detail": format_category_response(new_category)},
-            status_code=201
-        )
-        
+        await db.refresh(new_cat)
+
+        detail = {
+            "id": new_cat.id,
+            "name": new_cat.name,
+            "description": new_cat.description,
+            "created_at": new_cat.created_at.isoformat() if new_cat.created_at else None,
+            "updated_at": new_cat.updated_at.isoformat() if new_cat.updated_at else None
+        }
+        return JSONResponse(content={"detail": detail}, status_code=201)
     except HTTPException:
         raise
     except Exception as e:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al crear categoría: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error al crear categoría: {str(e)}")
 
-@router.put("/{category_id}", response_class=JSONResponse)
-async def update_category(
-    category_id: int,
-    category_update: CategoryUpdate,
-    db: AsyncSession = Depends(get_db)
-):
+@router.put("/category/{category_id}", response_class=JSONResponse)
+async def update_category(category_id: int, payload: CategoryCreate = Body(...), db: AsyncSession = Depends(get_db)):
     try:
-        category = await get_category_or_404(db, category_id)
-        
-        update_data = category_update.dict(exclude_unset=True)
-        
-        if "name" in update_data:
-            # Verificar nombre único
-            existing_cat = await db.execute(
-                select(Category)
-                .where(Category.name == update_data["name"])
-                .where(Category.id != category_id)
-            )
-            if existing_cat.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Ya existe una categoría con este nombre"
-                )
-        
-        for field, value in update_data.items():
-            setattr(category, field, value)
-            
-        category.updated_at = datetime.utcnow()
-        
-        await db.commit()
-        await db.refresh(category)
-        
-        return JSONResponse(
-            content={"detail": format_category_response(category)},
-            status_code=200
+        result = await db.execute(select(Category).where(Category.id == category_id))
+        category = result.scalar_one_or_none()
+        if not category:
+            raise HTTPException(status_code=404, detail="Categoría no encontrada")
+
+        await db.execute(
+            update(Category)
+            .where(Category.id == category_id)
+            .values(name=payload.name, description=payload.description, updated_at=datetime.utcnow())
         )
-        
+        await db.commit()
+
+        # devolver la categoría actualizada
+        result = await db.execute(select(Category).where(Category.id == category_id))
+        updated = result.scalar_one()
+        detail = {
+            "id": updated.id,
+            "name": updated.name,
+            "description": updated.description,
+            "created_at": updated.created_at.isoformat() if updated.created_at else None,
+            "updated_at": updated.updated_at.isoformat() if updated.updated_at else None
+        }
+        return JSONResponse(content={"detail": detail}, status_code=200)
     except HTTPException:
         raise
     except Exception as e:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al actualizar categoría: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error al actualizar categoría: {str(e)}")
 
-@router.delete("/{category_id}", status_code=204)
-async def delete_category(
-    category_id: int,
-    db: AsyncSession = Depends(get_db)
-):
+@router.delete("/category/{category_id}", status_code=204)
+async def delete_category(category_id: int, db: AsyncSession = Depends(get_db)):
     try:
-        category = await get_category_or_404(db, category_id)
-        
-        # Verificar si hay productos asociados
-        product_exists = await db.execute(
-            select(Product)
-            .where(Product.category_id == category_id)
-            .limit(1)
-        )
-        
-        if product_exists.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="No se puede eliminar: existen productos asociados a esta categoría"
-            )
-        
-        await db.delete(category)
+        result = await db.execute(select(Category).where(Category.id == category_id))
+        category = result.scalar_one_or_none()
+        if not category:
+            raise HTTPException(status_code=404, detail="Categoría no encontrada")
+
+        await db.execute(delete(Category).where(Category.id == category_id))
         await db.commit()
-        
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-    
-    except HTTPException as http_exc:
-        raise http_exc
-    except Exception as exc:
+        return Response(status_code=204)
+    except HTTPException:
+        raise
+    except Exception as e:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error interno al eliminar categoría: {str(exc)}"
-        ) from exc
+        raise HTTPException(status_code=500, detail=f"Error al eliminar categoría: {str(e)}")
