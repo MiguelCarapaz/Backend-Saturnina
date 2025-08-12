@@ -299,43 +299,44 @@ async def update_product(
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        # Parsear el JSON string a un diccionario
+        # Parsear y validar los datos
         try:
             product_data = json.loads(data)
+            product_update = ProductUpdate(**product_data)
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid JSON data")
-        
-        # Validar con el modelo Pydantic
-        product_update = ProductUpdate(**product_data)
-        
-        # Obtener el producto
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Datos inválidos: {str(e)}")
+
+        # Obtener el producto existente
         product = await get_product_or_404(db, product_id)
         
-        # Convertir id_categoria a int si es necesario
-        if product_update.id_categoria and product_update.id_categoria.startswith("category:"):
-            category_id = int(product_update.id_categoria.split(":")[1])
-        else:
-            category_id = product.category_id
-        
-        # Preparar datos de actualización
-        update_data = {
-            "name": product_update.nombre_producto or product.name,
-            "description": product_update.descripcion or product.description,
-            "price": product_update.precio or product.price,
-            "category_id": category_id,
-            "stock": product_update.stock or product.stock
-        }
-        
-        # Procesar imagen si existe
+        # Convertir id_categoria
+        category_id = (int(product_update.id_categoria.split(":")[1]) 
+                      if product_update.id_categoria and product_update.id_categoria.startswith("category:")
+                      else product.category_id)
+
+        # Procesar imagen (si se proporciona)
         if imagen_producto:
-            image_url = await upload_to_supabase_storage(imagen_producto, product_id)
-            await db.execute(delete(ProductImage).where(ProductImage.product_id == product_id))
-            db.add(ProductImage(
-                product_id=product_id,
-                image_url=image_url,
-                is_main=True
-            ))
-        # O si se enviaron URLs de imágenes directamente
+            try:
+                image_url = await upload_to_supabase_storage(imagen_producto, product_id)
+                await db.execute(delete(ProductImage).where(ProductImage.product_id == product_id))
+                db.add(ProductImage(
+                    product_id=product_id,
+                    image_url=image_url,
+                    is_main=True
+                ))
+            except HTTPException as e:
+                await db.rollback()
+                raise
+            except Exception as e:
+                await db.rollback()
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Error al procesar imagen: {str(e)}"
+                )
+
+        # Manejo de imágenes existentes (si se envían URLs)
         elif product_update.images is not None:
             await db.execute(delete(ProductImage).where(ProductImage.product_id == product_id))
             for img in product_update.images:
@@ -344,41 +345,58 @@ async def update_product(
                     image_url=img.image_url,
                     is_main=img.is_main
                 ))
-        
-        # Actualizar tallas si se enviaron
+
+        # Actualizar tallas
         if product_update.tallas is not None:
             await db.execute(delete(ProductSize).where(ProductSize.product_id == product_id))
             for talla in product_update.tallas:
-                db.add(ProductSize(
-                    product_id=product_id,
-                    name=talla.name
-                ))
-        
-        # Actualizar colores si se enviaron
+                db.add(ProductSize(product_id=product_id, name=talla.name))
+
+        # Actualizar colores
         if product_update.colores is not None:
             await db.execute(delete(ProductColor).where(ProductColor.product_id == product_id))
             for color in product_update.colores:
-                db.add(ProductColor(
-                    product_id=product_id,
-                    name=color.name
-                ))
+                db.add(ProductColor(product_id=product_id, name=color.name))
+
+        # Actualizar campos principales
+        update_fields = {
+            "name": product_update.nombre_producto or product.name,
+            "description": product_update.descripcion or product.description,
+            "price": product_update.precio or product.price,
+            "category_id": category_id,
+            "stock": product_update.stock or product.stock
+        }
         
-        # Actualizar campos del producto
-        for field, value in update_data.items():
+        for field, value in update_fields.items():
             setattr(product, field, value)
         
         product.updated_at = datetime.utcnow()
-        await db.commit()
-        await db.refresh(product)
+        
+        try:
+            await db.commit()
+            await db.refresh(product)
+        except Exception as e:
+            await db.rollback()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error al guardar en base de datos: {str(e)}"
+            )
 
-        return JSONResponse(content={"detail": format_product_response(product)}, status_code=200)
+        return JSONResponse(
+            content={"detail": format_product_response(product)},
+            status_code=200
+        )
     
     except HTTPException:
         raise
     except Exception as e:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error al actualizar producto: {str(e)}")
-
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error inesperado al actualizar producto: {str(e)}"
+        )
+    
+    
 @router.delete("/products/{product_id}", status_code=204)
 async def delete_product(product_id: int, db: AsyncSession = Depends(get_db)):
     try:
