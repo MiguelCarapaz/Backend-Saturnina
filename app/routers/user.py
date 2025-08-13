@@ -117,35 +117,30 @@ async def update_user_profile(
 
     return {"message": "Perfil actualizado correctamente"}
 
-@router.put("/{user_id}/password", response_model=dict)
+@router.put("/update-password", response_model=dict)
 async def update_password(
-    user_id: int,
     password_data: PasswordUpdateRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
     Actualiza la contraseña del usuario autenticado.
+    Versión compatible con el frontend (ruta /update-password)
     """
-    if current_user.id != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No autorizado para actualizar esta contraseña"
-        )
-
-    # Verificar contraseña actual
-    if not verify_password(password_data.current_password, current_user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Contraseña actual incorrecta"
-        )
-
     # Verificar que las nuevas contraseñas coincidan
     if password_data.new_password != password_data.confirm_password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Las nuevas contraseñas no coinciden"
         )
+
+    # Verificar contraseña actual (si está presente en el request)
+    if hasattr(password_data, 'current_password'):
+        if not verify_password(password_data.current_password, current_user.hashed_password):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Contraseña actual incorrecta"
+            )
 
     # Verificar que la nueva contraseña no sea igual a la actual
     if verify_password(password_data.new_password, current_user.hashed_password):
@@ -159,11 +154,11 @@ async def update_password(
     
     try:
         await db.commit()
+        return {"message": "Contraseña actualizada correctamente"}
     except Exception as e:
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al actualizar la contraseña: {str(e)}"
         )
-
-    return {"message": "Contraseña actualizada correctamente"}
+    
