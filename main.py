@@ -23,7 +23,6 @@ app.add_middleware(
 app.include_router(example.router)
 app.include_router(auth.router)
 app.include_router(user.router)
-app.include_router(user.password_router)
 app.include_router(products.router)
 app.include_router(category.router)
 app.include_router(orders_comments.router)
