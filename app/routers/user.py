@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, constr, EmailStr, validator
 from sqlalchemy.future import select
 from typing import Optional
-
+import re
 from app.database import get_db
 from app.models.user import User
 from .auth import get_current_user, get_password_hash, verify_password
