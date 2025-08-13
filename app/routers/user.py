@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel, constr, EmailStr
+from pydantic import BaseModel, constr, EmailStr, validator
 from sqlalchemy.future import select
 from typing import Optional
 
