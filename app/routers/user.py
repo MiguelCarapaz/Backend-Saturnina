@@ -27,10 +27,22 @@ class UserUpdateRequest(BaseModel):
     telefono: constr(pattern=r'^[0-9]{10}$')
     email: EmailStr
 
-class PasswordUpdateRequest(BaseModel):
+class PasswordUpdate(BaseModel):
     current_password: str
-    new_password: constr(min_length=8, max_length=50)
-    confirm_password: constr(min_length=8, max_length=50)
+    new_password: str
+    confirm_password: str
+
+    @validator('new_password')
+    def validate_password(cls, v):
+        if len(v) < 9 or len(v) > 18:
+            raise ValueError('La contraseña debe tener entre 9 y 18 caracteres')
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('La contraseña debe contener al menos una mayúscula')
+        if not re.search(r'\d', v):
+            raise ValueError('La contraseña debe contener al menos un número')
+        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', v):
+            raise ValueError('La contraseña debe contener al menos un carácter especial')
+        return v
 
 # --- Helpers ---
 async def get_user_by_id(db: AsyncSession, user_id: int) -> User:
@@ -117,44 +129,38 @@ async def update_user_profile(
 
     return {"message": "Perfil actualizado correctamente"}
 
-@router.put("/update-password", response_model=dict)
+@router.put("/update-password")
 async def update_password(
-    password_data: PasswordUpdateRequest,
+    password_data: PasswordUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Actualiza la contraseña del usuario autenticado.
-    Versión compatible con el frontend (ruta /update-password)
-    """
-    # Verificar que las nuevas contraseñas coincidan
+
+    # Verificar coincidencia de nuevas contraseñas
     if password_data.new_password != password_data.confirm_password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Las nuevas contraseñas no coinciden"
         )
 
-    # Verificar contraseña actual (si está presente en el request)
-    if hasattr(password_data, 'current_password'):
-        if not verify_password(password_data.current_password, current_user.hashed_password):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Contraseña actual incorrecta"
-            )
-
-    # Verificar que la nueva contraseña no sea igual a la actual
-    if verify_password(password_data.new_password, current_user.hashed_password):
+    # Verificar que la nueva no sea igual a la actual
+    if verify_password(password_data.new_password, current_user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="La nueva contraseña no puede ser igual a la actual"
         )
 
     # Actualizar contraseña
-    current_user.hashed_password = get_password_hash(password_data.new_password)
+    current_user.password_hash = get_password_hash(password_data.new_password)
     
     try:
         await db.commit()
-        return {"message": "Contraseña actualizada correctamente"}
+        return {
+            "detail": {
+                "message": "Contraseña actualizada correctamente",
+                "user_id": str(current_user.id)
+            }
+        }
     except Exception as e:
         await db.rollback()
         raise HTTPException(
