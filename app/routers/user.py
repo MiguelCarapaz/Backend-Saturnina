@@ -1,61 +1,101 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel, constr
+
 from app.database import get_db
 from app.models.user import User
-from typing import Optional
-from pydantic import BaseModel
-from sqlalchemy.future import select
-from .auth import get_current_user
+from .auth import get_current_user, get_password_hash, verify_password
 
+# Router for user profile actions (GET, PUT)
 router = APIRouter(
-    prefix="/users",
+    prefix="/user",
     tags=["users"],
     dependencies=[Depends(get_current_user)]
 )
 
-class UserProfile(BaseModel):
-    name: str
-    last_name: str
+# Router for password update, as it has a different path structure
+password_router = APIRouter(
+    tags=["users"],
+    dependencies=[Depends(get_current_user)]
+)
+
+# Pydantic model for updating user profile data, matching frontend fields
+class UserUpdate(BaseModel):
+    nombre: constr(min_length=3, max_length=10)
+    apellido: constr(min_length=3, max_length=10)
+    telefono: constr(pattern=r'^[0-9]{10}$')
     email: str
-    address: Optional[str] = None
-    phone: Optional[str] = None
-    role: str
+
+# Pydantic model for updating password
+class PasswordUpdate(BaseModel):
+    new_password: str
+    check_password: str
+
+async def get_user_profile(user_id: int, current_user: User = Depends(get_current_user)):
+    """
+    Fetches a user's profile information.
+    A user can only fetch their own profile.
+    """
+    # Ensure the logged-in user is requesting their own profile
+    if current_user.id != user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to access this profile")
+
+    user = current_user
+
+    # The frontend expects the data inside a "detail" object
+    return {"detail": {
+        "nombre": user.name,
+        "apellido": user.last_name,
+        "telefono": user.phone,
+        "email": user.email
+    }}
+
+async def update_user_profile(user_id: int, user_data: UserUpdate, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Updates a user's profile information.
+    A user can only update their own profile.
+    """
+    # Ensure the logged-in user is updating their own profile
+    if current_user.id != user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to update this profile")
+
+    user = current_user
+
+    # Update user fields from the request data
+    user.name = user_data.nombre
+    user.last_name = user_data.apellido
+    user.phone = user_data.telefono
+
+    try:
+        await db.commit()
+        await db.refresh(user)
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Error updating profile: {e}")
+
+    return {"message": "Profile updated successfully"}
 
 
-# Endpoint /profile (sin prefijo /users) para compatibilidad frontend
-from fastapi import APIRouter as FastAPIRouter
-profile_router = FastAPIRouter()
+async def update_password(password_data: PasswordUpdate, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Updates the current user's password.
+    """
+    # Check if the two password fields match
+    if password_data.new_password != password_data.check_password:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, 
+            detail="Las contraseñas no coinciden."
+        )
 
-@profile_router.get("/profile", response_model=UserProfile)
-async def read_profile(current_user: User = Depends(get_current_user)):
-    return {
-        "name": current_user.name,
-        "last_name": current_user.last_name,
-        "email": current_user.email,
-        "address": current_user.address,
-        "phone": current_user.phone,
-        "role": current_user.role
-    }
+    # Check if the new password is the same as the old one
+    if verify_password(password_data.new_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_406_NOT_ACCEPTABLE, 
+            detail="La contraseña es igual a la anterior."
+        )
 
-@router.put("/me", response_model=UserProfile)
-async def update_user_me(
-    user_data: UserProfile,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    current_user.name = user_data.name
-    current_user.last_name = user_data.last_name
-    current_user.address = user_data.address
-    current_user.phone = user_data.phone
-    
+    # Hash the new password and update it in the database
+    current_user.hashed_password = get_password_hash(password_data.new_password)
     await db.commit()
-    await db.refresh(current_user)
-    
-    return {
-        "name": current_user.name,
-        "last_name": current_user.last_name,
-        "email": current_user.email,
-        "address": current_user.address,
-        "phone": current_user.phone,
-        "role": current_user.role
-    }
+
+    return {"message": "Contraseña actualizada con éxito."}

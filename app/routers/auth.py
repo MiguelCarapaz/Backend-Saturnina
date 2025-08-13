@@ -52,18 +52,11 @@ class RegisterForm(BaseModel):
     email: str
     password: str
     telefono: str
-    address: str 
 
     @validator('nombre', 'apellido')
     def validate_name_length(cls, v):
         if len(v) < 3 or len(v) > 10:
             raise ValueError('Debe tener entre 3 y 10 caracteres')
-        return v
-    
-    @validator('address')
-    def validate_address(cls, v):
-        if len(v) < 10:
-            raise ValueError('La dirección debe tener al menos 10 caracteres')
         return v
 
     @validator('password')
@@ -204,7 +197,6 @@ async def register(
             password_hash=hashed_password,
             role="user",
             phone=user_data.telefono,
-            address=user_data.address,
             is_active=False
         )
         
