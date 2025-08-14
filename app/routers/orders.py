@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -7,7 +7,6 @@ from app.database import get_db
 from app.models.orders import Order, OrderItem
 from app.models.product import Product, ProductImage
 from typing import List, Dict, Any, Optional
-from datetime import datetime
 import json
 import uuid
 from pathlib import Path
@@ -25,11 +24,21 @@ router = APIRouter()
 
 ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
-# ---------- Helpers ----------
+
+# ---------------- Helpers ----------------
+
+def title_status(s: Optional[str]) -> Optional[str]:
+    if not s:
+        return s
+    # convierte "pendiente" -> "Pendiente", "en entrega" -> "En entrega"
+    return s.capitalize()
 
 def format_product_for_order(product: Product, db_images: Optional[List[ProductImage]] = None) -> Dict[str, Any]:
     images = db_images or []
-    imagenes_ordenadas = sorted(images, key=lambda x: (not getattr(x, "is_main", False), getattr(x, "created_at", None))) if images else []
+    imagenes_ordenadas = sorted(
+        images,
+        key=lambda x: (not getattr(x, "is_main", False), getattr(x, "created_at", None))
+    ) if images else []
     imagenes_formateadas = [
         {
             "id": img.id,
@@ -77,22 +86,18 @@ async def upload_to_supabase_storage(file: UploadFile, prefix: str = "orders") -
     url = await anyio.to_thread.run_sync(sync_upload)
     return url
 
-async def build_order_items_response(db: AsyncSession) -> List[Dict[str, Any]]:
+async def build_order_items_response_for_orders(orders: List[Order], db: AsyncSession) -> List[Dict[str, Any]]:
     """
-    Construye la lista plana que usa el frontend/admin: una fila por cada OrderItem
-    con datos combinados (order meta + product format + item talla/color si existen).
-    Evita accesos lazy a relaciones; hace consultas explícitas asíncronas.
+    Construye filas (una por OrderItem) para una lista de orders provistas.
+    Evita lazy loads; hace selects explícitos.
     """
-    orders_q = await db.execute(select(Order).order_by(Order.created_at.desc()))
-    orders = orders_q.scalars().all()
-    result = []
-
+    result: List[Dict[str, Any]] = []
     for order in orders:
-        # Obtener items explícitamente (asíncrono)
+        # items del pedido
         items_q = await db.execute(select(OrderItem).where(OrderItem.order_id == order.id))
         items = items_q.scalars().all()
         for item in items:
-            # obtener producto explicitamente
+            # producto
             prod_q = await db.execute(select(Product).where(Product.id == item.product_id))
             prod = prod_q.scalar_one_or_none()
 
@@ -103,98 +108,105 @@ async def build_order_items_response(db: AsyncSession) -> List[Dict[str, Any]]:
 
             id_producto_obj = format_product_for_order(prod, prod_images) if prod else None
 
+            # construir id_orden (meta) y top-level descripcion
+            img_tx = getattr(order, "image_transaccion", None) or getattr(order, "transfer_image_url", None) or getattr(order, "voucher_url", None)
+            image_obj = None
+            if img_tx:
+                if isinstance(img_tx, str):
+                    image_obj = {"secure_url": img_tx}
+                elif isinstance(img_tx, dict) and ("secure_url" in img_tx or "url" in img_tx):
+                    image_obj = img_tx
+                else:
+                    image_obj = {"secure_url": str(img_tx)}
+
             id_orden_obj = {
+                "id": order.id,
                 "nombre": getattr(order, "nombre", None),
                 "apellido": getattr(order, "apellido", None),
                 "email": getattr(order, "email", None),
                 "telefono": getattr(order, "telefono", None),
                 "direccion": getattr(order, "direccion", None),
                 "descripcion": getattr(order, "descripcion", None),
-                "image_transaccion": None
+                "image_transaccion": image_obj
             }
-            img_tx = getattr(order, "image_transaccion", None) or getattr(order, "transfer_image_url", None) or getattr(order, "voucher_url", None)
-            if img_tx:
-                if isinstance(img_tx, str):
-                    id_orden_obj["image_transaccion"] = {"secure_url": img_tx}
-                elif isinstance(img_tx, dict) and ("secure_url" in img_tx or "url" in img_tx):
-                    id_orden_obj["image_transaccion"] = img_tx
-                else:
-                    id_orden_obj["image_transaccion"] = {"secure_url": str(img_tx)}
 
             fila = {
                 "id": order.id,
                 "fecha": order.created_at.isoformat() if getattr(order, "created_at", None) else None,
-                "status": order.status,
+                "status": title_status(order.status),
                 "id_producto": id_producto_obj,
                 "id_orden": id_orden_obj,
                 "talla": getattr(item, "talla", None),
                 "color": getattr(item, "color", None),
                 "cantidad": getattr(item, "quantity", None),
                 "precio": float(getattr(item, "price", 0)) if getattr(item, "price", None) is not None else None,
-                "order_item_id": item.id
+                "order_item_id": item.id,
+                # campo top-level que el frontend usa en algunos lugares:
+                "descripcion": getattr(order, "descripcion", None)
             }
             result.append(fila)
     return result
 
-# ---------- Endpoints ----------
+# ---------------- Endpoints ----------------
 
 @router.get("/orders")
 async def get_orders(db: AsyncSession = Depends(get_db)):
+    """
+    Devuelve todos los pedidos (filas) en el formato que el frontend/admin espera:
+    {"detail":[{"result": [ ... filas ... ] }]}
+    """
     try:
-        filas = await build_order_items_response(db)
+        orders_q = await db.execute(select(Order).order_by(Order.created_at.desc()))
+        orders = orders_q.scalars().all()
+        filas = await build_order_items_response_for_orders(orders, db)
         return JSONResponse(content={"detail":[{"result": filas}]}, status_code=200)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al obtener pedidos: {str(e)}")
 
-# alias para compatibilidad frontend (GET /order/{id})
-@router.get("/order/{order_id}")
-async def get_order_alias(order_id: int, db: AsyncSession = Depends(get_db)):
-    return await get_order(order_id, db)
-
 @router.get("/orders/{order_id}")
-async def get_order(order_id: int, db: AsyncSession = Depends(get_db)):
+async def get_order_by_id(order_id: int, db: AsyncSession = Depends(get_db)):
+    """
+    Devuelve las filas (order items) correspondientes a UN pedido por su order.id
+    """
     try:
         order_q = await db.execute(select(Order).where(Order.id == order_id))
         order = order_q.scalar_one_or_none()
         if not order:
             raise HTTPException(status_code=404, detail="Pedido no encontrado")
 
-        filas = []
-        items_q = await db.execute(select(OrderItem).where(OrderItem.order_id == order.id))
-        items = items_q.scalars().all()
-        for item in items:
-            prod_q = await db.execute(select(Product).where(Product.id == item.product_id))
-            prod = prod_q.scalar_one_or_none()
-            prod_imgs_q = await db.execute(select(ProductImage).where(ProductImage.product_id == prod.id)) if prod else None
-            prod_imgs = prod_imgs_q.scalars().all() if prod_imgs_q else []
-            filas.append({
-                "id": order.id,
-                "fecha": order.created_at.isoformat() if getattr(order, "created_at", None) else None,
-                "status": order.status,
-                "id_producto": format_product_for_order(prod, prod_imgs) if prod else None,
-                "id_orden": {
-                    "nombre": getattr(order, "nombre", None),
-                    "apellido": getattr(order, "apellido", None),
-                    "email": getattr(order, "email", None),
-                    "telefono": getattr(order, "telefono", None),
-                    "direccion": getattr(order, "direccion", None),
-                    "descripcion": getattr(order, "descripcion", None),
-                    "image_transaccion": ({"secure_url": getattr(order, "image_transaccion")}) if getattr(order, "image_transaccion", None) else None
-                },
-                "talla": getattr(item, "talla", None),
-                "color": getattr(item, "color", None),
-                "cantidad": getattr(item, "quantity", None),
-                "precio": float(getattr(item, "price", 0)) if getattr(item, "price", None) is not None else None,
-                "order_item_id": item.id
-            })
+        filas = await build_order_items_response_for_orders([order], db)
         return JSONResponse(content={"detail":[{"result": filas}]}, status_code=200)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al obtener pedido: {str(e)}")
 
+@router.get("/order/{user_id}")
+async def get_orders_by_user(user_id: int, db: AsyncSession = Depends(get_db)):
+    """
+    Endpoint que usa el frontend de USUARIO: GET /order/{userId}
+    Devuelve todas las filas (order items) de los pedidos creados por ese user_id.
+    """
+    try:
+        orders_q = await db.execute(select(Order).where(Order.user_id == int(user_id)).order_by(Order.created_at.desc()))
+        orders = orders_q.scalars().all()
+        if not orders:
+            # devolver array vacío (frontend espera estructura consistente)
+            return JSONResponse(content={"detail":[{"result": []}]}, status_code=200)
+
+        filas = await build_order_items_response_for_orders(orders, db)
+        return JSONResponse(content={"detail":[{"result": filas}]}, status_code=200)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al obtener pedidos del usuario: {str(e)}")
+
 @router.post("/order", status_code=201)
 async def create_order(request: Request, db: AsyncSession = Depends(get_db)):
+    """
+    Crea pedido. Acepta multipart/form-data con:
+      - data: JSON string con { user_id, price_order, products: [{id_producto, cantidad, talla, color}], nombre, apellido, direccion, email, telefono, descripcion }
+      - transfer_image: archivo (jpg/jpeg/png/webp)
+    También acepta application/json con el mismo objeto (sin archivo).
+    """
     try:
         content_type = (request.headers.get("content-type") or "").lower()
         is_multipart = "multipart/form-data" in content_type
@@ -207,7 +219,7 @@ async def create_order(request: Request, db: AsyncSession = Depends(get_db)):
             data_raw = form.get("data") or "{}"
             try:
                 payload = json.loads(data_raw)
-            except json.JSONDecodeError:
+            except Exception:
                 payload = {}
             transfer_image = form.get("transfer_image")
             if transfer_image and hasattr(transfer_image, "filename"):
@@ -216,7 +228,7 @@ async def create_order(request: Request, db: AsyncSession = Depends(get_db)):
         else:
             try:
                 payload = await request.json()
-            except json.JSONDecodeError:
+            except Exception:
                 payload = {}
 
         user_id = payload.get("user_id") or payload.get("userId") or payload.get("user")
@@ -265,8 +277,7 @@ async def create_order(request: Request, db: AsyncSession = Depends(get_db)):
                     pass
                 db.add(item)
 
-        # devolver filas creadas (solo las del pedido nuevo)
-        filas = await build_order_items_response(db)
+        filas = await build_order_items_response_for_orders([new_order], db)
         filas_nuevo = [f for f in filas if f["id"] == new_order.id]
         return JSONResponse(content={"detail":[{"result": filas_nuevo}]}, status_code=201)
 
@@ -278,6 +289,11 @@ async def create_order(request: Request, db: AsyncSession = Depends(get_db)):
 
 @router.put("/orders/{order_id}")
 async def update_order(order_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    """
+    Actualiza estado/descripcion del order.
+    Se espera body JSON con por ejemplo: { status_order: "En entrega", descripcion: "..." }
+    También acepta { status: "...", descripcion: "..." }.
+    """
     try:
         payload = {}
         try:
@@ -308,7 +324,7 @@ async def update_order(order_id: int, request: Request, db: AsyncSession = Depen
         await db.commit()
         await db.refresh(order)
 
-        filas = await build_order_items_response(db)
+        filas = await build_order_items_response_for_orders([order], db)
         filas_order = [f for f in filas if f["id"] == order.id]
         return JSONResponse(content={"detail":[{"result": filas_order}]}, status_code=200)
 
