@@ -20,6 +20,7 @@ class Product(Base):
     colors = relationship("ProductColor", cascade="all, delete-orphan")
     order_items = relationship("OrderItem", back_populates="product")
 
+
 class ProductImage(Base):
     __tablename__ = "product_images"
     id = Column(Integer, primary_key=True)
