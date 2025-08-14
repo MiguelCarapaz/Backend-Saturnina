@@ -18,8 +18,6 @@ class Product(Base):
     category = relationship("Category", back_populates="products")
     sizes = relationship("ProductSize", cascade="all, delete-orphan")
     colors = relationship("ProductColor", cascade="all, delete-orphan")
-    order_items = relationship("OrderItem", back_populates="product")
-
 
 class ProductImage(Base):
     __tablename__ = "product_images"
