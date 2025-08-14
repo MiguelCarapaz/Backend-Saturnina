@@ -1,3 +1,4 @@
+# app/routers/user.py
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, constr, EmailStr, validator
@@ -7,11 +8,18 @@ import re
 from app.database import get_db
 from app.models.user import User
 from .auth import get_current_user, get_password_hash, verify_password
+from fastapi.responses import JSONResponse
 
+# Router principal (con prefix /user)
 router = APIRouter(
     prefix="/user",
     tags=["users"],
-    dependencies=[Depends(get_current_user)]
+    # no aplicar dependencia global aquí para mayor control; la usamos en la función
+)
+
+# Router adicional sin prefijo (lo incluiremos en main.py)
+router_public = APIRouter(
+    tags=["users-public"]
 )
 
 # --- Modelos Pydantic ---
@@ -55,24 +63,16 @@ async def get_user_by_id(db: AsyncSession, user_id: int) -> User:
         )
     return user
 
-# --- Endpoints ---
+# --- Endpoints (perfil) ---
 @router.get("/{user_id}", response_model=dict)
 async def get_user_profile(
     user_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Obtiene el perfil del usuario autenticado.
-    """
     if current_user.id != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No autorizado para acceder a este perfil"
-        )
-
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No autorizado para acceder a este perfil")
     user = await get_user_by_id(db, user_id)
-    
     return {
         "detail": {
             "nombre": user.name,
@@ -89,29 +89,16 @@ async def update_user_profile(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Actualiza el perfil del usuario autenticado.
-    """
     if current_user.id != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No autorizado para actualizar este perfil"
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No autorizado para actualizar este perfil")
 
     user = await get_user_by_id(db, user_id)
 
-    # Verificar si el email ya existe (excepto para el usuario actual)
     if user_data.email != user.email:
-        existing_email = await db.execute(
-            select(User).where(User.email == user_data.email)
-        )
+        existing_email = await db.execute(select(User).where(User.email == user_data.email))
         if existing_email.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="El email ya está en uso por otro usuario"
-            )
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El email ya está en uso por otro usuario")
 
-    # Actualizar campos
     user.name = user_data.nombre
     user.last_name = user_data.apellido
     user.phone = user_data.telefono
@@ -122,39 +109,32 @@ async def update_user_profile(
         await db.refresh(user)
     except Exception as e:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al actualizar el perfil: {str(e)}"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error al actualizar el perfil: {str(e)}")
 
     return {"message": "Perfil actualizado correctamente"}
 
-@router.put("/update-password")
-async def update_password(
+# -------------------------------
+# Reutilizamos la implementación de actualización de contraseña
+# -------------------------------
+async def _update_password_impl(
     password_data: PasswordUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-
     # Verificar coincidencia de nuevas contraseñas
     if password_data.new_password != password_data.confirm_password:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Las nuevas contraseñas no coinciden"
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Las nuevas contraseñas no coinciden")
 
-    # Verificar que la nueva no sea igual a la actual
+    # Verificar que la nueva no sea igual a la actual (verify_password espera plain vs hash)
     if verify_password(password_data.new_password, current_user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="La nueva contraseña no puede ser igual a la actual"
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="La nueva contraseña no puede ser igual a la actual")
 
     # Actualizar contraseña
     current_user.password_hash = get_password_hash(password_data.new_password)
     
     try:
         await db.commit()
+        await db.refresh(current_user)
         return {
             "detail": {
                 "message": "Contraseña actualizada correctamente",
@@ -163,8 +143,9 @@ async def update_password(
         }
     except Exception as e:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al actualizar la contraseña: {str(e)}"
-        )
-    
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error al actualizar la contraseña: {str(e)}")
+
+router.put("/update-password")( _update_password_impl )
+router_public.put("/update-password")( _update_password_impl )
+
+__all__ = ["router", "router_public"]
