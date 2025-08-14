@@ -287,42 +287,64 @@ async def create_order(request: Request, db: AsyncSession = Depends(get_db)):
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al crear pedido: {str(e)}")
 
-@router.put("/orders/{order_id}")
-async def update_order(order_id: int, request: Request, db: AsyncSession = Depends(get_db)):
-    """
-    Actualiza estado/descripcion del order.
-    Se espera body JSON con por ejemplo: { status_order: "En entrega", descripcion: "..." }
-    También acepta { status: "...", descripcion: "..." }.
-    """
+@router.put("/order/{order_id}")
+async def update_order_user(order_id: int, request: Request, db: AsyncSession = Depends(get_db)):
     try:
+        content_type = (request.headers.get("content-type") or "").lower()
+        is_multipart = "multipart/form-data" in content_type
+
         payload = {}
-        try:
-            payload = await request.json()
-        except Exception:
+        transfer_image: Optional[UploadFile] = None
+
+        if is_multipart:
+            form = await request.form()
+            data_raw = form.get("data") or "{}"
             try:
-                form = await request.form()
-                payload = dict(form)
+                payload = json.loads(data_raw)
             except Exception:
                 payload = {}
-
-        status_val = payload.get("status_order") or payload.get("status")
-        descripcion = payload.get("descripcion") or payload.get("description") or payload.get("desc")
+            transfer_image = form.get("transfer_image")
+            if transfer_image and hasattr(transfer_image, "filename") and not transfer_image.filename:
+                transfer_image = None
+        else:
+            try:
+                payload = await request.json()
+            except Exception:
+                payload = {}
 
         q = await db.execute(select(Order).where(Order.id == order_id))
         order = q.scalar_one_or_none()
         if not order:
             raise HTTPException(status_code=404, detail="Pedido no encontrado")
 
-        if status_val is not None:
-            order.status = status_val
-        if descripcion is not None:
-            try:
-                setattr(order, "descripcion", descripcion)
-            except Exception:
-                pass
+        if (order.status or "").lower() != "pendiente":
+            raise HTTPException(status_code=400, detail="Solo se pueden editar pedidos con estado 'Pendiente'")
 
-        await db.commit()
-        await db.refresh(order)
+        if transfer_image:
+            try:
+                prefix = f"orders/{getattr(order, 'user_id', 'temp')}"
+                url = await upload_to_supabase_storage(transfer_image, prefix=prefix)
+                payload["image_transaccion"] = url
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Error al subir imagen: {str(e)}")
+
+        allowed = ("nombre", "apellido", "direccion", "email", "telefono", "descripcion", "image_transaccion")
+        dirty = False
+        for key in allowed:
+            if key in payload and payload.get(key) is not None:
+                try:
+                    setattr(order, key, payload.get(key))
+                    dirty = True
+                except Exception:
+                    pass
+
+        if dirty:
+            await db.commit()
+            await db.refresh(order)
+        else:
+            await db.refresh(order)
 
         filas = await build_order_items_response_for_orders([order], db)
         filas_order = [f for f in filas if f["id"] == order.id]
@@ -331,7 +353,10 @@ async def update_order(order_id: int, request: Request, db: AsyncSession = Depen
     except HTTPException:
         raise
     except Exception as e:
-        await db.rollback()
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=f"Error al actualizar pedido: {str(e)}")
 
 @router.delete("/orders/{order_id}", status_code=204)
