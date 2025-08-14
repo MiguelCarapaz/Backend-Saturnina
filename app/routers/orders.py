@@ -216,13 +216,8 @@ async def get_order(order_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.post("/order", status_code=201)
 async def create_order(request: Request, db: AsyncSession = Depends(get_db)):
-    """
-    Crea un pedido. Acepta multipart/form-data con:
-      - data: JSON string con { user_id, price_order, products: [{id_producto, cantidad, talla, color}], nombre, apellido, direccion, email, telefono, descripcion }
-      - transfer_image: archivo (jpg/jpeg/png/webp)
-    También acepta application/json con el mismo objeto (sin archivo).
-    """
     try:
+        # Mueve toda la lógica de procesamiento de archivos fuera del bloque de la transacción
         content_type = (request.headers.get("content-type") or "").lower()
         is_multipart = "multipart/form-data" in content_type
 
@@ -231,99 +226,89 @@ async def create_order(request: Request, db: AsyncSession = Depends(get_db)):
 
         if is_multipart:
             form = await request.form()
-            data_raw = form.get("data") or form.get("order") or form.get("pedido") or "{}"
+            data_raw = form.get("data") or "{}"
             try:
                 payload = json.loads(data_raw)
-            except Exception:
-                # si data no es JSON válido, intentar convertir form dict -> payload
-                payload = dict(form)
-            # extraer archivo
-            try:
-                transfer_image = form.get("transfer_image") or form.get("comprobante") or form.get("voucher")
-                if transfer_image and not hasattr(transfer_image, "filename"):
-                    # puede venir vacío
-                    transfer_image = None
-            except Exception:
-                transfer_image = None
+            except json.JSONDecodeError:
+                payload = {}
+            
+            # Procesa el archivo primero, antes de iniciar la transacción
+            transfer_image = form.get("transfer_image")
+            if transfer_image and hasattr(transfer_image, "filename"):
+                try:
+                    url = await upload_to_supabase_storage(transfer_image, prefix=f"orders/{payload.get('user_id', 'temp')}")
+                    payload["image_transaccion"] = url
+                except Exception as e:
+                    raise HTTPException(status_code=500, detail=f"Error al subir imagen: {str(e)}")
         else:
-            # json body
             try:
                 payload = await request.json()
-            except Exception:
+            except json.JSONDecodeError:
                 payload = {}
 
-        # validar presencia de campos mínimos
-        user_id = payload.get("user_id") or payload.get("userId") or payload.get("user")
-        price_order = payload.get("price_order") or payload.get("total") or payload.get("price")
-        products = payload.get("products") or payload.get("items") or payload.get("productos") or []
-        if user_id is None or price_order is None or not isinstance(products, list) or len(products) == 0:
+        # Validación de campos requeridos
+        required_fields = ["user_id", "price_order", "products"]
+        if not all(field in payload for field in required_fields):
             raise HTTPException(status_code=400, detail="Datos incompletos para crear el pedido")
 
-        # crear la orden
-        new_order = Order(user_id=int(user_id), total=float(price_order), status="pendiente")
-        # intentar asignar campos extra (si existen en el modelo)
-        for key in ("nombre","apellido","direccion","email","telefono","descripcion"):
-            if key in payload and payload.get(key) is not None:
-                try:
-                    setattr(new_order, key, payload.get(key))
-                except Exception:
-                    pass
+        # Inicia la transacción de base de datos
+        async with db.begin():
+            # Crear la orden
+            new_order = Order(
+                user_id=int(payload["user_id"]),
+                total=float(payload["price_order"]),
+                status="pendiente"
+            )
+            
+            # Asignar campos adicionales
+            for field in ["nombre", "apellido", "direccion", "email", "telefono", "descripcion"]:
+                if field in payload:
+                    setattr(new_order, field, payload[field])
+            
+            if "image_transaccion" in payload:
+                new_order.image_transaccion = payload["image_transaccion"]
 
-        # subir transfer_image si existe
-        if transfer_image:
-            url = await upload_to_supabase_storage(transfer_image, prefix=f"orders/{user_id}")
-            # intentar asignar al campo que exista
-            for possible in ("image_transaccion", "transfer_image_url", "voucher_url"):
-                try:
-                    setattr(new_order, possible, url)
-                    break
-                except Exception:
+            db.add(new_order)
+            await db.flush()
+
+            # Procesar productos
+            for product in payload["products"]:
+                # Validar y obtener datos del producto
+                product_id = product.get("id_producto") or product.get("id")
+                if not product_id:
+                    continue
+                
+                # Consulta asíncrona para obtener el producto
+                result = await db.execute(select(Product).where(Product.id == int(product_id)))
+                db_product = result.scalar_one_or_none()
+                
+                if not db_product:
                     continue
 
-        db.add(new_order)
-        await db.flush()  # obtener id sin commitear aún
+                # Crear OrderItem
+                item = OrderItem(
+                    order_id=new_order.id,
+                    product_id=int(product_id),
+                    quantity=int(product.get("cantidad", 1)),
+                    price=float(db_product.price)
+                )
+                
+                # Opcional: talla y color
+                if "talla" in product:
+                    item.talla = product["talla"]
+                if "color" in product:
+                    item.color = product["color"]
+                
+                db.add(item)
 
-        # crear order items
-        for prod in products:
-            # prod puede venir con id_producto o id
-            prod_id = prod.get("id_producto") or prod.get("id") or prod.get("product_id")
-            cantidad = prod.get("cantidad") or prod.get("cantidad_producto") or prod.get("quantity") or 1
-            talla = prod.get("talla") if "talla" in prod else prod.get("size")
-            color = prod.get("color") if "color" in prod else prod.get("colour")
-            # obtener precio real del producto en DB (recomendado)
-            p_q = await db.execute(select(Product).where(Product.id == int(prod_id)))
-            p_obj = p_q.scalar_one_or_none()
-            price = float(p_obj.price) if p_obj and getattr(p_obj, "price", None) is not None else float(prod.get("precio") or prod.get("price") or 0)
-
-            item = OrderItem(order_id=new_order.id, product_id=int(prod_id), quantity=int(cantidad), price=price)
-            # asignar talla/color si esas columnas existen en el modelo
-            try:
-                if talla is not None:
-                    setattr(item, "talla", talla)
-            except Exception:
-                pass
-            try:
-                if color is not None:
-                    setattr(item, "color", color)
-            except Exception:
-                pass
-
-            db.add(item)
-
-        await db.commit()
-        await db.refresh(new_order)
-
-        # construir respuesta similar a GET /orders (devolver filas recién creadas)
-        filas = await build_order_items_response(db)
-        # filtrar por el id del pedido recién creado
-        filas_nuevo = [f for f in filas if f["id"] == new_order.id]
-
-        return JSONResponse(content={"detail":[{"result": filas_nuevo}]}, status_code=201)
+            # No necesitas commit explícito por el context manager async with db.begin()
+        
+        # Construir respuesta
+        return JSONResponse(content={"message": "Pedido creado exitosamente", "order_id": new_order.id}, status_code=201)
 
     except HTTPException:
         raise
     except Exception as e:
-        await db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al crear pedido: {str(e)}")
 
 @router.put("/orders/{order_id}")
