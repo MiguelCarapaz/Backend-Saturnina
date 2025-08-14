@@ -27,8 +27,13 @@ ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
 # ---------- Helpers ----------
 
-def format_product_for_order(product: Product, db_images: Optional[List[ProductImage]] = None) -> Dict[str, Any]:
-    images = getattr(product, "images", None) or db_images or []
+def format_product_for_order(product: Optional[Product], db_images: Optional[List[ProductImage]] = None) -> Dict[str, Any]:
+    """
+    Estructura del producto tal como la espera el frontend dentro de los pedidos.
+    """
+    if not product:
+        return None
+    images = db_images or []
     imagenes_ordenadas = sorted(images, key=lambda x: (not getattr(x, "is_main", False), getattr(x, "created_at", None))) if images else []
     imagenes_formateadas = [
         {
@@ -50,6 +55,10 @@ def format_product_for_order(product: Product, db_images: Optional[List[ProductI
     }
 
 async def upload_to_supabase_storage(file: UploadFile, prefix: str = "orders") -> str:
+    """
+    Sube archivo a Supabase Storage de forma no bloqueante y retorna URL pública.
+    Evita errores greenlet_spawn usando anyio.to_thread.run_sync.
+    """
     file_ext = Path(file.filename).suffix.lower() if file.filename else ""
     if file_ext not in ALLOWED_EXT:
         raise HTTPException(status_code=406, detail="Únicamente las extensiones de tipo jpg, jpeg, png y webp están permitidos")
@@ -58,7 +67,11 @@ async def upload_to_supabase_storage(file: UploadFile, prefix: str = "orders") -
     file_name = f"{prefix}/{uuid.uuid4()}{file_ext}"
 
     def sync_upload():
-        res = supabase.storage.from_("productimages").upload(path=file_name, file=file_content, file_options={"content-type": file.content_type or "application/octet-stream", "x-upsert": "true"})
+        res = supabase.storage.from_("productimages").upload(
+            path=file_name,
+            file=file_content,
+            file_options={"content-type": file.content_type or "application/octet-stream", "x-upsert": "true"}
+        )
         public = supabase.storage.from_("productimages").get_public_url(file_name)
         if isinstance(public, dict):
             url = public.get("publicUrl") or public.get("public_url") or public.get("url")
@@ -78,27 +91,29 @@ async def upload_to_supabase_storage(file: UploadFile, prefix: str = "orders") -
     return url
 
 async def build_order_items_response(db: AsyncSession) -> List[Dict[str, Any]]:
+    """
+    Construye la lista plana que usa el frontend/admin: una fila por cada OrderItem
+    con datos combinados (order meta + product format + item talla/color si existen).
+    Evita lazy-loading accediendo explícitamente a las tablas.
+    """
     orders_q = await db.execute(select(Order).order_by(Order.created_at.desc()))
     orders = orders_q.scalars().all()
-    result = []
+    result: List[Dict[str, Any]] = []
 
     for order in orders:
-        items = getattr(order, "items", []) or []
+        items_q = await db.execute(select(OrderItem).where(OrderItem.order_id == order.id))
+        items = items_q.scalars().all()
+
         for item in items:
             prod = None
-            if hasattr(item, "product") and getattr(item, "product") is not None:
-                prod = getattr(item, "product")
-            else:
+            if getattr(item, "product_id", None) is not None:
                 prod_q = await db.execute(select(Product).where(Product.id == item.product_id))
                 prod = prod_q.scalar_one_or_none()
 
             prod_images = []
             if prod is not None:
-                if getattr(prod, "images", None):
-                    prod_images = prod.images
-                else:
-                    imgs_q = await db.execute(select(ProductImage).where(ProductImage.product_id == prod.id))
-                    prod_images = imgs_q.scalars().all()
+                imgs_q = await db.execute(select(ProductImage).where(ProductImage.product_id == prod.id))
+                prod_images = imgs_q.scalars().all()
 
             id_producto_obj = format_product_for_order(prod, prod_images) if prod else None
 
@@ -111,7 +126,7 @@ async def build_order_items_response(db: AsyncSession) -> List[Dict[str, Any]]:
                 "descripcion": getattr(order, "descripcion", None),
                 "image_transaccion": None
             }
-            img_tx = getattr(order, "image_transaccion", None) or getattr(order, "transfer_image_url", None) or getattr(order, "voucher_url", None)
+            img_tx = getattr(order, "image_transaccion", None)
             if img_tx:
                 if isinstance(img_tx, str):
                     id_orden_obj["image_transaccion"] = {"secure_url": img_tx}
@@ -137,21 +152,18 @@ async def build_order_items_response(db: AsyncSession) -> List[Dict[str, Any]]:
 
 # ---------- Endpoints ----------
 
-# LISTADO (plural) - estructura ya conocida por frontend/admin
 @router.get("/orders")
 async def get_orders(db: AsyncSession = Depends(get_db)):
+    """
+    Devuelve listado de PEDIDOS en la forma que espera el frontend/admin:
+    {"detail":[{"result": [ ... filas ... ] }]}
+    """
     try:
         filas = await build_order_items_response(db)
         return JSONResponse(content={"detail":[{"result": filas}]}, status_code=200)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al obtener pedidos: {str(e)}")
 
-# ALIAS: permitir también /order (singular) para compatibilidad
-@router.get("/order")
-async def get_orders_alias(db: AsyncSession = Depends(get_db)):
-    return await get_orders(db)
-
-# Obtener un pedido por id (plural)
 @router.get("/orders/{order_id}")
 async def get_order(order_id: int, db: AsyncSession = Depends(get_db)):
     try:
@@ -161,12 +173,16 @@ async def get_order(order_id: int, db: AsyncSession = Depends(get_db)):
             raise HTTPException(status_code=404, detail="Pedido no encontrado")
 
         filas = []
-        items = getattr(order, "items", []) or []
+        items_q = await db.execute(select(OrderItem).where(OrderItem.order_id == order.id))
+        items = items_q.scalars().all()
+
         for item in items:
             prod_q = await db.execute(select(Product).where(Product.id == item.product_id))
             prod = prod_q.scalar_one_or_none()
-            prod_imgs_q = await db.execute(select(ProductImage).where(ProductImage.product_id == prod.id)) if prod else None
-            prod_imgs = prod_imgs_q.scalars().all() if prod_imgs_q else []
+            prod_imgs = []
+            if prod:
+                imgs_q = await db.execute(select(ProductImage).where(ProductImage.product_id == prod.id))
+                prod_imgs = imgs_q.scalars().all()
             filas.append({
                 "id": order.id,
                 "fecha": order.created_at.isoformat() if getattr(order, "created_at", None) else None,
@@ -193,12 +209,19 @@ async def get_order(order_id: int, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al obtener pedido: {str(e)}")
 
+# Alias que el frontend usa: GET /order/{id}
 @router.get("/order/{order_id}")
 async def get_order_alias(order_id: int, db: AsyncSession = Depends(get_db)):
     return await get_order(order_id, db)
 
 @router.post("/order", status_code=201)
 async def create_order(request: Request, db: AsyncSession = Depends(get_db)):
+    """
+    Crea un pedido. Acepta multipart/form-data con:
+      - data: JSON string con { user_id, price_order, products: [{id_producto, cantidad, talla, color}], nombre, apellido, direccion, email, telefono, descripcion }
+      - transfer_image: archivo (jpg/jpeg/png/webp)
+    También acepta application/json con el mismo objeto (sin archivo).
+    """
     try:
         content_type = (request.headers.get("content-type") or "").lower()
         is_multipart = "multipart/form-data" in content_type
@@ -208,64 +231,86 @@ async def create_order(request: Request, db: AsyncSession = Depends(get_db)):
 
         if is_multipart:
             form = await request.form()
-            data_raw = form.get("data") or "{}"
+            data_raw = form.get("data") or form.get("order") or "{}"
             try:
                 payload = json.loads(data_raw)
-            except json.JSONDecodeError:
-                payload = {}
-            transfer_image = form.get("transfer_image")
-            if transfer_image and hasattr(transfer_image, "filename"):
-                try:
-                    url = await upload_to_supabase_storage(transfer_image, prefix=f"orders/{payload.get('user_id', 'temp')}")
-                    payload["image_transaccion"] = url
-                except Exception as e:
-                    raise HTTPException(status_code=500, detail=f"Error al subir imagen: {str(e)}")
+            except Exception:
+                payload = dict(form)
+
+            transfer_image = form.get("transfer_image") or form.get("comprobante") or form.get("voucher")
+            if transfer_image and not hasattr(transfer_image, "filename"):
+                transfer_image = None
         else:
             try:
                 payload = await request.json()
-            except json.JSONDecodeError:
+            except Exception:
                 payload = {}
 
-        required_fields = ["user_id", "price_order", "products"]
-        if not all(field in payload for field in required_fields):
+        # Validación
+        user_id = payload.get("user_id") or payload.get("userId") or payload.get("user")
+        price_order = payload.get("price_order") or payload.get("price") or payload.get("total")
+        products = payload.get("products") or payload.get("items") or []
+        if user_id is None or price_order is None or not isinstance(products, list) or len(products) == 0:
             raise HTTPException(status_code=400, detail="Datos incompletos para crear el pedido")
 
+        # Subir comprobante primero (fuera de la transacción DB)
+        image_url = None
+        if transfer_image:
+            image_url = await upload_to_supabase_storage(transfer_image, prefix=f"orders/{user_id}")
+            # anotar en payload para guardarlo luego
+            payload["image_transaccion"] = image_url
+
+        # Crear orden y items en transacción
         async with db.begin():
             new_order = Order(
-                user_id=int(payload["user_id"]),
-                total=float(payload["price_order"]),
+                user_id=int(user_id),
+                total=float(price_order),
                 status="pendiente"
             )
-            for field in ["nombre", "apellido", "direccion", "email", "telefono", "descripcion"]:
-                if field in payload:
-                    setattr(new_order, field, payload[field])
-            if "image_transaccion" in payload:
-                new_order.image_transaccion = payload["image_transaccion"]
+            for key in ("nombre","apellido","direccion","email","telefono","descripcion"):
+                if key in payload and payload.get(key) is not None:
+                    try:
+                        setattr(new_order, key, payload.get(key))
+                    except Exception:
+                        pass
+            if image_url:
+                new_order.image_transaccion = image_url
 
             db.add(new_order)
-            await db.flush()
+            await db.flush()  # obtiene id
 
-            for product in payload["products"]:
-                product_id = product.get("id_producto") or product.get("id")
-                if not product_id:
+            # crear items
+            for prod in products:
+                prod_id = prod.get("id_producto") or prod.get("id") or prod.get("product_id")
+                if not prod_id:
                     continue
-                result = await db.execute(select(Product).where(Product.id == int(product_id)))
-                db_product = result.scalar_one_or_none()
-                if not db_product:
-                    continue
+                cantidad = prod.get("cantidad") or prod.get("quantity") or 1
+                talla = prod.get("talla") if "talla" in prod else prod.get("size")
+                color = prod.get("color") if "color" in prod else prod.get("colour")
+
+                p_q = await db.execute(select(Product).where(Product.id == int(prod_id)))
+                p_obj = p_q.scalar_one_or_none()
+                price = float(p_obj.price) if p_obj and getattr(p_obj, "price", None) is not None else float(prod.get("precio") or prod.get("price") or 0)
+
                 item = OrderItem(
                     order_id=new_order.id,
-                    product_id=int(product_id),
-                    quantity=int(product.get("cantidad", 1)),
-                    price=float(db_product.price)
+                    product_id=int(prod_id),
+                    quantity=int(cantidad),
+                    price=price
                 )
-                if "talla" in product:
-                    item.talla = product["talla"]
-                if "color" in product:
-                    item.color = product["color"]
+                if talla is not None:
+                    try:
+                        item.talla = talla
+                    except Exception:
+                        pass
+                if color is not None:
+                    try:
+                        item.color = color
+                    except Exception:
+                        pass
                 db.add(item)
 
-        # construimos respuesta (filas del pedido creado)
+        # Construir respuesta con la/s filas del pedido recién creado (misma forma que GET /orders)
         filas = await build_order_items_response(db)
         filas_nuevo = [f for f in filas if f["id"] == new_order.id]
         return JSONResponse(content={"detail":[{"result": filas_nuevo}]}, status_code=201)
@@ -275,9 +320,12 @@ async def create_order(request: Request, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al crear pedido: {str(e)}")
 
-# ACTUALIZAR estado/descr del pedido (se mantiene /orders/{id} porque frontend usa esa ruta)
 @router.put("/orders/{order_id}")
 async def update_order(order_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    """
+    Actualiza estado/descripcion del order.
+    Se espera body JSON con por ejemplo: { status_order: "En entrega", descripcion: "..." }
+    """
     try:
         payload = {}
         try:
@@ -301,7 +349,7 @@ async def update_order(order_id: int, request: Request, db: AsyncSession = Depen
             order.status = status_val
         if descripcion is not None:
             try:
-                setattr(order, "descripcion", descripcion)
+                order.descripcion = descripcion
             except Exception:
                 pass
 
@@ -318,7 +366,6 @@ async def update_order(order_id: int, request: Request, db: AsyncSession = Depen
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al actualizar pedido: {str(e)}")
 
-# ELIMINAR pedido (mantener /orders/{id})
 @router.delete("/orders/{order_id}", status_code=204)
 async def delete_order(order_id: int, db: AsyncSession = Depends(get_db)):
     try:
