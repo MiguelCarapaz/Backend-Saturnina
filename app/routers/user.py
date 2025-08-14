@@ -27,7 +27,7 @@ class UserProfileResponse(BaseModel):
 class UserUpdateRequest(BaseModel):
     nombre: constr(min_length=3, max_length=50)
     apellido: constr(min_length=3, max_length=50)
-    telefono: constr(regex=r'^[0-9]{10}$')
+    telefono: constr(pattern=r'^[0-9]{10}$')
     email: EmailStr
 
 class PasswordUpdate(BaseModel):
