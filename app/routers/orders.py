@@ -296,7 +296,7 @@ async def update_order_user(order_id: int, request: Request, db: AsyncSession = 
         payload = {}
         transfer_image: Optional[UploadFile] = None
 
-        # Parsear payload según tipo de contenido
+        # Parseo del body (multipart o json)
         if is_multipart:
             form = await request.form()
             data_raw = form.get("data") or "{}"
@@ -319,17 +319,11 @@ async def update_order_user(order_id: int, request: Request, db: AsyncSession = 
         if not order:
             raise HTTPException(status_code=404, detail="Pedido no encontrado")
 
-        # Si viene del usuario, solo puede editar si está pendiente
-        # Si viene del admin y manda "status" o "status_order", sí puede actualizar
-        status_val = payload.get("status_order") or payload.get("status")
-        es_actualizacion_estado = status_val is not None
+        # El usuario solo puede editar si está PENDIENTE
+        if (order.status or "").lower() != "pendiente":
+            raise HTTPException(status_code=400, detail="Solo se pueden editar pedidos con estado 'Pendiente'")
 
-        if not es_actualizacion_estado:
-            # Validación de estado solo para cambios de datos de usuario
-            if (order.status or "").lower() != "pendiente":
-                raise HTTPException(status_code=400, detail="Solo se pueden editar pedidos con estado 'Pendiente'")
-
-        # Subir imagen si viene
+        # Si envía nueva imagen, subirla a storage
         if transfer_image:
             try:
                 prefix = f"orders/{getattr(order, 'user_id', 'temp')}"
@@ -340,43 +334,27 @@ async def update_order_user(order_id: int, request: Request, db: AsyncSession = 
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Error al subir imagen: {str(e)}")
 
-        # Campos permitidos para actualización
-        allowed = (
-            "nombre", "apellido", "direccion", "email", "telefono",
-            "descripcion", "image_transaccion", "status"
-        )
+        # Campos permitidos para USUARIO (no incluye status)
+        allowed = ("nombre", "apellido", "direccion", "email", "telefono", "descripcion", "image_transaccion")
         dirty = False
         for key in allowed:
             if key in payload and payload.get(key) is not None:
                 try:
-                    # Manejo de status_order como alias de status
-                    if key == "status" and not hasattr(order, "status"):
-                        setattr(order, "status_order", payload.get(key))
-                    else:
-                        setattr(order, key, payload.get(key))
+                    setattr(order, key, payload.get(key))
                     dirty = True
                 except Exception:
                     pass
 
-        # Caso especial: si envían status_order
-        if status_val is not None:
-            try:
-                setattr(order, "status", status_val)
-                dirty = True
-            except Exception:
-                pass
-
-        # Guardar cambios si hubo modificaciones
         if dirty:
             await db.commit()
             await db.refresh(order)
         else:
             await db.refresh(order)
 
-        # Respuesta con estructura del frontend
+        # Responder en el formato que consume el frontend
         filas = await build_order_items_response_for_orders([order], db)
         filas_order = [f for f in filas if f["id"] == order.id]
-        return JSONResponse(content={"detail": [{"result": filas_order}]}, status_code=200)
+        return JSONResponse(content={"detail":[{"result": filas_order}]}, status_code=200)
 
     except HTTPException:
         raise
@@ -386,6 +364,62 @@ async def update_order_user(order_id: int, request: Request, db: AsyncSession = 
         except Exception:
             pass
         raise HTTPException(status_code=500, detail=f"Error al actualizar pedido: {str(e)}")
+    
+@router.put("/orders/{order_id}")
+async def update_order_status_admin(order_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    """
+    Espera body (JSON o form) con:
+      { "status_order": "Pendiente|En entrega|Rechazado|Finalizado", "descripcion": "opcional" }
+    Coincide con lo que envía el frontend admin.
+    """
+    try:
+        # Carga payload desde JSON o form
+        try:
+            payload = await request.json()
+        except Exception:
+            try:
+                form = await request.form()
+                payload = dict(form)
+            except Exception:
+                payload = {}
+
+        status_val = payload.get("status_order") or payload.get("status")
+        descripcion = payload.get("descripcion") or payload.get("description") or payload.get("desc")
+
+        if status_val is None and descripcion is None:
+            raise HTTPException(status_code=400, detail="Nada para actualizar")
+
+        # Buscar pedido
+        q = await db.execute(select(Order).where(Order.id == order_id))
+        order = q.scalar_one_or_none()
+        if not order:
+            raise HTTPException(status_code=404, detail="Pedido no encontrado")
+
+        # Admin SÍ puede cambiar estado aunque no esté 'Pendiente'
+        if status_val is not None:
+            order.status = status_val
+        if descripcion is not None:
+            try:
+                setattr(order, "descripcion", descripcion)
+            except Exception:
+                pass
+
+        await db.commit()
+        await db.refresh(order)
+
+        # Responder en el formato que consume el frontend admin
+        filas = await build_order_items_response_for_orders([order], db)
+        filas_order = [f for f in filas if f["id"] == order.id]
+        return JSONResponse(content={"detail":[{"result": filas_order}]}, status_code=200)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Error al actualizar estado del pedido: {str(e)}")
 
 @router.delete("/orders/{order_id}", status_code=204)
 async def delete_order(order_id: int, db: AsyncSession = Depends(get_db)):
