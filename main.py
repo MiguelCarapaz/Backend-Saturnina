@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import text
-from app.routers import auth, user, products, category, comment
+from app.routers import auth, comments, user, products, category
 from app.routers.user import router_public as user_public_router
 from app.routers import orders as orders_router
 from app.database import get_db
@@ -28,7 +28,7 @@ app.include_router(user_public_router)
 app.include_router(products.router)
 app.include_router(category.router)
 app.include_router(orders_router.router)
-app.include_router(comment.router)
+app.include_router(comments.router)
 
 @app.api_route("/", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"])
 def root():
