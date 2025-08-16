@@ -312,16 +312,3 @@ async def delete_comment_general(comment_id: int, db: AsyncSession = Depends(get
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al eliminar comentario general: {str(e)}")
-
-@router.get("/comments-all")
-async def get_all_comments(db: AsyncSession = Depends(get_db)):
-    try:
-        q = await db.execute(select(Comment))
-        rows: List[Comment] = q.scalars().all()
-        result = []
-        for r in rows:
-            user_obj = await _fetch_user_obj(db, getattr(r, "user_id", None))
-            result.append(_serialize_comment_row(r, user_obj))
-        return JSONResponse(content={"detail": [{"result": result}]}, status_code=200)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al obtener todos los comentarios: {str(e)}")
