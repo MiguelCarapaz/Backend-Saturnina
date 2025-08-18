@@ -116,21 +116,34 @@ async def send_verification_email(email: str, token: str, background_tasks: Back
     if not EMAIL_SENDER or not EMAIL_PASSWORD:
         raise RuntimeError("Configuración de email incompleta")
     
-    message = MIMEMultipart()
+    message = MIMEMultipart("alternative")
     message["From"] = EMAIL_SENDER
     message["To"] = email
-    message["Subject"] = "Verifica tu cuenta en Saturnina"
-    
-    body = f"""
-    ¡Bienvenido a Saturnina!
-    
-    Por favor verifica tu cuenta haciendo clic en el siguiente enlace:
-    {verification_url}
-    
-    Este enlace expirará en 24 horas.
+    message["Subject"] = "🔑 Verifica tu cuenta en Saturnina"
+
+    html = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; background-color: #f9f9f9; padding: 20px;">
+        <div style="max-width: 600px; margin: auto; background: white; border-radius: 10px; padding: 30px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
+          <h2 style="color: #4CAF50; text-align: center;">Verificación de cuenta</h2>
+          <p>Hola <b>{email}</b>,</p>
+          <p>Gracias por registrarte en <b>Saturnina</b>. Para activar tu cuenta haz clic en el botón de abajo:</p>
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="{verification_url}" style="background-color: #4CAF50; color: white; padding: 14px 28px; text-decoration: none; font-size: 16px; border-radius: 5px; display: inline-block;">
+              Verificar cuenta
+            </a>
+          </div>
+          <p style="font-size: 14px; color: #555;">Este enlace expirará en 24 horas.</p>
+          <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+          <p style="font-size: 12px; color: #aaa; text-align: center;">
+            © 2025 Saturnina - Todos los derechos reservados
+          </p>
+        </div>
+      </body>
+    </html>
     """
-    
-    message.attach(MIMEText(body, "plain"))
+
+    message.attach(MIMEText(html, "html"))
     
     def send_email():
         try:
