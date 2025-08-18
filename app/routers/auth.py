@@ -16,7 +16,6 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import re
-from fastapi.responses import JSONResponse
 
 # Cargar variables de entorno
 load_dotenv()
@@ -31,6 +30,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60))
 EMAIL_SENDER = os.getenv("EMAIL_SENDER")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 # Definición de roles
 ADMIN_ROLE = "rol:74rvq7jatzo6ac19mc79"
@@ -41,7 +41,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 router = APIRouter(tags=["authentication"])
 
-# Esquemas
+# ---------------- Esquemas ----------------
 class LoginForm(BaseModel):
     email: str
     password: str
@@ -85,7 +85,15 @@ class TokenResponse(BaseModel):
 class TokenData(BaseModel):
     email: Optional[str] = None
 
-# Funciones auxiliares
+# Para recuperación
+class RecoverPasswordRequest(BaseModel):
+    email: EmailStr
+
+class NewPasswordRequest(BaseModel):
+    new_password: str
+    check_password: str
+
+# ---------------- Funciones auxiliares ----------------
 async def get_user_by_email(db: AsyncSession, email: str):
     result = await db.execute(select(User).where(User.email == email))
     return result.scalars().first()
@@ -105,7 +113,6 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
 async def send_verification_email(email: str, token: str, background_tasks: BackgroundTasks):
     verification_url = f"https://saturnina.vercel.app/confirmar/{token}"
     
-    # Validar configuración de email
     if not EMAIL_SENDER or not EMAIL_PASSWORD:
         raise RuntimeError("Configuración de email incompleta")
     
@@ -136,7 +143,20 @@ async def send_verification_email(email: str, token: str, background_tasks: Back
     
     background_tasks.add_task(send_email)
 
-# Endpoints 
+def create_reset_token(data: dict, expires_delta: timedelta = timedelta(hours=1)):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + expires_delta
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def verify_reset_token(token: str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload.get("sub")
+    except JWTError:
+        return None
+
+# ---------------- Endpoints ----------------
 @router.post("/login")
 async def login(form_data: LoginForm, db: AsyncSession = Depends(get_db)):
     user = await get_user_by_email(db, form_data.email)
@@ -285,130 +305,85 @@ async def get_current_user(
     return user
 
 
-# ----------------------------
-# 🔹 Nueva implementación: Recuperación de contraseña
-# ----------------------------
-
-class RecoverPasswordRequest(BaseModel):
-    email: str
-
-class PasswordUpdate(BaseModel):
-    new_password: str
-    confirm_password: str
-
-    @validator('new_password')
-    def validate_password(cls, v):
-        if len(v) < 9 or len(v) > 18:
-            raise ValueError('La contraseña debe tener entre 9 y 18 caracteres')
-        if not re.search(r'[A-Z]', v):
-            raise ValueError('Debe contener al menos una mayúscula')
-        if not re.search(r'\d', v):
-            raise ValueError('Debe contener al menos un número')
-        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', v):
-            raise ValueError('Debe contener al menos un carácter especial')
-        return v
-
-async def send_recover_email(email: str, token: str, background_tasks: BackgroundTasks):
-    url = f"https://saturnina.vercel.app/recuperar/{token}"
-
-    if not EMAIL_SENDER or not EMAIL_PASSWORD:
-        raise RuntimeError("Config de email incompleta")
-
-    message = MIMEMultipart()
-    message["From"] = EMAIL_SENDER
-    message["To"] = email
-    message["Subject"] = "Recupera tu contraseña en Saturnina"
-
-    body = f"""
-    Has solicitado recuperar tu cuenta.
-
-    Haz clic en el siguiente enlace para restablecer tu contraseña:
-    {url}
-
-    Este enlace expira en 1 hora.
-    """
-
-    message.attach(MIMEText(body, "plain"))
-
-    def send_email():
-        try:
-            with smtplib.SMTP("smtp.gmail.com", 587) as server:
-                server.starttls()
-                server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-                server.send_message(message)
-        except Exception as e:
-            print(f"Error enviando email de recuperación: {e}")
-
-    background_tasks.add_task(send_email)
+# ---------------- Recuperación de contraseña ----------------
 
 @router.post("/recover-password")
-async def recover_password(
-    data: RecoverPasswordRequest,
-    db: AsyncSession = Depends(get_db),
-    background_tasks: BackgroundTasks = BackgroundTasks()
-):
-    user = await get_user_by_email(db, data.email)
+async def recover_password(request: RecoverPasswordRequest, db: AsyncSession = Depends(get_db)):
+    user = await get_user_by_email(db, request.email)
     if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        raise HTTPException(status_code=404, detail="El correo no está registrado.")
 
-    if not user.is_active:
-        raise HTTPException(status_code=422, detail="Necesita activar su cuenta")
+    # Crear token
+    token = create_reset_token({"sub": user.email})
+    reset_link = f"{FRONTEND_URL}/cambiar-contrasena/{token}"
 
-    token = create_access_token(
-        data={"sub": user.email, "purpose": "password_recovery"},
-        expires_delta=timedelta(hours=1)
-    )
+    # Email con HTML
+    message = MIMEMultipart("alternative")
+    message["From"] = EMAIL_SENDER
+    message["To"] = user.email
+    message["Subject"] = "🔑 Recuperación de contraseña - Saturnina"
 
-    await send_recover_email(user.email, token, background_tasks)
-    return {"message": "Se ha enviado un correo de recuperación"}
+    html = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; background-color: #f9f9f9; padding: 20px;">
+        <div style="max-width: 600px; margin: auto; background: white; border-radius: 10px; padding: 30px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
+          <h2 style="color: #4CAF50; text-align: center;">Recuperación de contraseña</h2>
+          <p>Hola <b>{user.name}</b>,</p>
+          <p>Has solicitado restablecer tu contraseña. Haz clic en el botón de abajo para continuar:</p>
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="{reset_link}" style="background-color: #4CAF50; color: white; padding: 14px 28px; text-decoration: none; font-size: 16px; border-radius: 5px; display: inline-block;">
+              Restablecer contraseña
+            </a>
+          </div>
+          <p style="font-size: 14px; color: #555;">Si no solicitaste este cambio, puedes ignorar este mensaje.</p>
+          <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+          <p style="font-size: 12px; color: #aaa; text-align: center;">
+            © 2025 Saturnina - Todos los derechos reservados
+          </p>
+        </div>
+      </body>
+    </html>
+    """
+
+    message.attach(MIMEText(html, "html"))
+
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            server.send_message(message)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error enviando email: {e}")
+
+    return {"msg": "Se ha enviado un correo de recuperación."}
+
 
 @router.get("/recover-password/{token}")
-async def verify_recover_token(token: str, db: AsyncSession = Depends(get_db)):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email = payload.get("sub")
-        purpose = payload.get("purpose")
+async def verify_recover_token(token: str):
+    email = verify_reset_token(token)
+    if not email:
+        raise HTTPException(status_code=400, detail="Token inválido o expirado.")
+    return {"msg": "Token válido", "email": email}
 
-        if not email or purpose != "password_recovery":
-            raise HTTPException(status_code=400, detail="Token inválido")
-
-        user = await get_user_by_email(db, email)
-        if not user:
-            raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
-        return {"msg": "Token válido. Puede restablecer su contraseña."}
-    except JWTError:
-        raise HTTPException(status_code=400, detail="Token inválido o expirado")
 
 @router.post("/new-password/{token}")
-async def new_password(
-    token: str,
-    data: PasswordUpdate,
-    db: AsyncSession = Depends(get_db)
-):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email = payload.get("sub")
-        purpose = payload.get("purpose")
+async def set_new_password(token: str, request: NewPasswordRequest, db: AsyncSession = Depends(get_db)):
+    email = verify_reset_token(token)
+    if not email:
+        raise HTTPException(status_code=400, detail="Token inválido o expirado.")
 
-        if not email or purpose != "password_recovery":
-            raise HTTPException(status_code=400, detail="Token inválido")
+    if request.new_password != request.check_password:
+        raise HTTPException(status_code=400, detail="Las contraseñas no coinciden.")
 
-        user = await get_user_by_email(db, email)
-        if not user:
-            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    if len(request.new_password) < 9:
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 9 caracteres.")
 
-        if data.new_password != data.confirm_password:
-            raise HTTPException(status_code=400, detail="Las contraseñas no coinciden")
+    user = await get_user_by_email(db, email)
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
 
-        if verify_password(data.new_password, user.password_hash):
-            raise HTTPException(status_code=406, detail="La nueva contraseña no puede ser igual a la actual")
+    user.password_hash = get_password_hash(request.new_password)
+    db.add(user)
+    await db.commit()
 
-        user.password_hash = get_password_hash(data.new_password)
-        db.add(user)
-        await db.commit()
-        await db.refresh(user)
-
-        return JSONResponse(status_code=200, content={"msg": "Contraseña actualizada correctamente"})
-    except JWTError:
-        raise HTTPException(status_code=400, detail="Token inválido o expirado")
+    return {"msg": "Contraseña actualizada con éxito."}
