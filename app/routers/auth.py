@@ -17,10 +17,8 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import re
 
-# Cargar variables de entorno
 load_dotenv()
 
-# Configuración JWT
 SECRET_KEY = os.getenv("SECRET_KEY")
 if not SECRET_KEY:
     raise ValueError(
@@ -32,7 +30,6 @@ EMAIL_SENDER = os.getenv("EMAIL_SENDER")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://saturnina.vercel.app")
 
-# Definición de roles
 ADMIN_ROLE = "rol:74rvq7jatzo6ac19mc79"
 USER_ROLE = "rol:vuqn7k4vw0m1a3wt7fkb"
 
@@ -40,8 +37,6 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 router = APIRouter(tags=["authentication"])
-
-# ---------------- Esquemas ----------------
 class LoginForm(BaseModel):
     email: str
     password: str
@@ -85,7 +80,6 @@ class TokenResponse(BaseModel):
 class TokenData(BaseModel):
     email: Optional[str] = None
 
-# Para recuperación
 class RecoverPasswordRequest(BaseModel):
     email: EmailStr
 
@@ -93,7 +87,6 @@ class NewPasswordRequest(BaseModel):
     new_password: str
     check_password: str
 
-# ---------------- Funciones auxiliares ----------------
 async def get_user_by_email(db: AsyncSession, email: str):
     result = await db.execute(select(User).where(User.email == email))
     return result.scalars().first()
@@ -169,7 +162,6 @@ def verify_reset_token(token: str):
     except JWTError:
         return None
 
-# ---------------- Endpoints ----------------
 @router.post("/login")
 async def login(form_data: LoginForm, db: AsyncSession = Depends(get_db)):
     user = await get_user_by_email(db, form_data.email)
@@ -317,20 +309,15 @@ async def get_current_user(
         raise credentials_exception
     return user
 
-
-# ---------------- Recuperación de contraseña ----------------
-
 @router.post("/recover-password")
 async def recover_password(request: RecoverPasswordRequest, db: AsyncSession = Depends(get_db)):
     user = await get_user_by_email(db, request.email)
     if not user:
         raise HTTPException(status_code=404, detail="El correo no está registrado.")
 
-    # Crear token
     token = create_reset_token({"sub": user.email})
     reset_link = f"{FRONTEND_URL}/cambiar-contrasena/{token}"
 
-    # Email con HTML
     message = MIMEMultipart("alternative")
     message["From"] = EMAIL_SENDER
     message["To"] = user.email

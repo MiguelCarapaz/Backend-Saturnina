@@ -11,7 +11,6 @@ from datetime import datetime
 
 app = FastAPI()
 
-# Configuración CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://saturnina.vercel.app"],

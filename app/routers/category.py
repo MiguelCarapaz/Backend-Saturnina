@@ -128,7 +128,6 @@ async def delete_category(category_id: int, db: AsyncSession = Depends(get_db)):
         if not category:
             raise HTTPException(status_code=404, detail="Categoría no encontrada")
 
-        # opcional: comprobar productos asociados antes de borrar (prudente)
         from app.models.product import Product
         prod_q = await db.execute(select(Product).where(Product.category_id == category_id))
         associated = prod_q.scalars().first()

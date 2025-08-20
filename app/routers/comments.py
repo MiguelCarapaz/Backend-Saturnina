@@ -1,4 +1,3 @@
-# app/routers/comments.py
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +12,6 @@ from app.models.orders import Order, OrderItem
 router = APIRouter()
 
 
-# ---------------- helpers ----------------
 async def _fetch_user_obj(db: AsyncSession, user_id: Optional[int]) -> Optional[Dict[str, Any]]:
     if user_id is None:
         return None
@@ -46,7 +44,6 @@ def _serialize_comment_row(row: Comment, user_obj: Optional[Dict[str, Any]] = No
     return result
 
 
-# ---------------- GET comments (product / all) ----------------
 @router.get("/comments")
 async def get_comments(id_producto: Optional[str] = None, db: AsyncSession = Depends(get_db)):
     try:
@@ -64,7 +61,7 @@ async def get_comments(id_producto: Optional[str] = None, db: AsyncSession = Dep
             if parsed is not None:
                 query = query.where(Comment.product_id == parsed)
             else:
-                query = query.where(Comment.product_id == None)  # no matches
+                query = query.where(Comment.product_id == None)  
         q = await db.execute(query)
         rows: List[Comment] = q.scalars().all()
 
@@ -78,7 +75,6 @@ async def get_comments(id_producto: Optional[str] = None, db: AsyncSession = Dep
         raise HTTPException(status_code=500, detail=f"Error al obtener comentarios: {str(e)}")
 
 
-# ---------------- GET comments-general ----------------
 @router.get("/comments-general")
 async def get_comments_general(db: AsyncSession = Depends(get_db)):
     try:
@@ -93,11 +89,7 @@ async def get_comments_general(db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Error al obtener comentarios generales: {str(e)}")
 
 
-# ---------------- helper: check purchase finalized for product ----------------
 async def _user_bought_product_and_finalized(db: AsyncSession, user_id: int, product_id: int) -> bool:
-    """
-    True si existe OrderItem con product_id y su Order pertenece a user_id y tiene status='finalizado' (case-insensitive).
-    """
     q = await db.execute(
         select(OrderItem)
         .join(Order, OrderItem.order_id == Order.id)
@@ -111,7 +103,6 @@ async def _user_bought_product_and_finalized(db: AsyncSession, user_id: int, pro
     return len(rows) > 0
 
 
-# ---------------- helper: check user has any finalized order ----------------
 async def _user_has_any_finalized_order(db: AsyncSession, user_id: int) -> bool:
     q = await db.execute(
         select(Order).where(
@@ -123,7 +114,6 @@ async def _user_has_any_finalized_order(db: AsyncSession, user_id: int) -> bool:
     return len(rows) > 0
 
 
-# ---------------- POST comment (product) ----------------
 @router.post("/comments", status_code=201)
 async def create_comment(request: Request, db: AsyncSession = Depends(get_db)):
     try:
@@ -139,14 +129,12 @@ async def create_comment(request: Request, db: AsyncSession = Depends(get_db)):
     if user_id is None or id_producto is None or calificacion is None or descripcion is None:
         raise HTTPException(status_code=400, detail="Datos incompletos para crear comentario")
 
-    # normalize id_producto like "product:123"
     if isinstance(id_producto, str) and id_producto.startswith("product:"):
         tail = id_producto.split("product:", 1)[1]
         if tail.isdigit():
             id_producto = int(tail)
 
     try:
-        # Validación: usuario debe haber comprado el producto y pedido finalizado
         bought = await _user_bought_product_and_finalized(db, int(user_id), int(id_producto))
         if not bought:
             raise HTTPException(status_code=406, detail="Necesitas esperar a que tu compra esté finalizada o comprar este producto para poder comentar")
@@ -171,7 +159,6 @@ async def create_comment(request: Request, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Error al crear comentario: {str(e)}")
 
 
-# ---------------- PUT comment (product) ----------------
 @router.put("/comments/{comment_id}")
 async def update_comment(comment_id: int, request: Request, db: AsyncSession = Depends(get_db)):
     try:
@@ -206,7 +193,6 @@ async def update_comment(comment_id: int, request: Request, db: AsyncSession = D
     return JSONResponse(content={"result": out}, status_code=200)
 
 
-# ---------------- DELETE comment (product) ----------------
 @router.delete("/comments/{comment_id}", status_code=204)
 async def delete_comment(comment_id: int, db: AsyncSession = Depends(get_db)):
     q = await db.execute(select(Comment).where(Comment.id == comment_id))
@@ -222,7 +208,6 @@ async def delete_comment(comment_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Error al eliminar comentario: {str(e)}")
 
 
-# ---------------- POST comments-general (site-wide) ----------------
 @router.post("/comments-general", status_code=201)
 async def create_comment_general(request: Request, db: AsyncSession = Depends(get_db)):
     try:
@@ -238,7 +223,6 @@ async def create_comment_general(request: Request, db: AsyncSession = Depends(ge
         raise HTTPException(status_code=400, detail="Datos incompletos para crear comentario general")
 
     try:
-        # Validación: usuario debe tener al menos un pedido finalizado
         ok = await _user_has_any_finalized_order(db, int(user_id))
         if not ok:
             raise HTTPException(status_code=406, detail="Necesitas esperar a que tu compra esté finalizada o comprar algo para comentar")
@@ -263,7 +247,6 @@ async def create_comment_general(request: Request, db: AsyncSession = Depends(ge
         raise HTTPException(status_code=500, detail=f"Error al crear comentario general: {str(e)}")
 
 
-# ---------------- PUT comments-general/{id} ----------------
 @router.put("/comments-general/{comment_id}")
 async def update_comment_general(comment_id: int, request: Request, db: AsyncSession = Depends(get_db)):
     try:
@@ -298,7 +281,6 @@ async def update_comment_general(comment_id: int, request: Request, db: AsyncSes
     return JSONResponse(content={"result": out}, status_code=200)
 
 
-# ---------------- DELETE comments-general/{id} ----------------
 @router.delete("/comments-general/{comment_id}", status_code=204)
 async def delete_comment_general(comment_id: int, db: AsyncSession = Depends(get_db)):
     q = await db.execute(select(Comment).where(Comment.id == comment_id, Comment.product_id == None))

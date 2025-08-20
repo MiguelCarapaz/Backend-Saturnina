@@ -25,12 +25,10 @@ router = APIRouter()
 ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
 
-# ---------------- Helpers ----------------
 
 def title_status(s: Optional[str]) -> Optional[str]:
     if not s:
         return s
-    # convierte "pendiente" -> "Pendiente", "en entrega" -> "En entrega"
     return s.capitalize()
 
 def format_product_for_order(product: Product, db_images: Optional[List[ProductImage]] = None) -> Dict[str, Any]:
@@ -87,17 +85,11 @@ async def upload_to_supabase_storage(file: UploadFile, prefix: str = "orders") -
     return url
 
 async def build_order_items_response_for_orders(orders: List[Order], db: AsyncSession) -> List[Dict[str, Any]]:
-    """
-    Construye filas (una por OrderItem) para una lista de orders provistas.
-    Evita lazy loads; hace selects explícitos.
-    """
     result: List[Dict[str, Any]] = []
     for order in orders:
-        # items del pedido
         items_q = await db.execute(select(OrderItem).where(OrderItem.order_id == order.id))
         items = items_q.scalars().all()
         for item in items:
-            # producto
             prod_q = await db.execute(select(Product).where(Product.id == item.product_id))
             prod = prod_q.scalar_one_or_none()
 
@@ -108,7 +100,6 @@ async def build_order_items_response_for_orders(orders: List[Order], db: AsyncSe
 
             id_producto_obj = format_product_for_order(prod, prod_images) if prod else None
 
-            # construir id_orden (meta) y top-level descripcion
             img_tx = getattr(order, "image_transaccion", None) or getattr(order, "transfer_image_url", None) or getattr(order, "voucher_url", None)
             image_obj = None
             if img_tx:
@@ -141,20 +132,14 @@ async def build_order_items_response_for_orders(orders: List[Order], db: AsyncSe
                 "cantidad": getattr(item, "quantity", None),
                 "precio": float(getattr(item, "price", 0)) if getattr(item, "price", None) is not None else None,
                 "order_item_id": item.id,
-                # campo top-level que el frontend usa en algunos lugares:
                 "descripcion": getattr(order, "descripcion", None)
             }
             result.append(fila)
     return result
 
-# ---------------- Endpoints ----------------
 
 @router.get("/orders")
 async def get_orders(db: AsyncSession = Depends(get_db)):
-    """
-    Devuelve todos los pedidos (filas) en el formato que el frontend/admin espera:
-    {"detail":[{"result": [ ... filas ... ] }]}
-    """
     try:
         orders_q = await db.execute(select(Order).order_by(Order.created_at.desc()))
         orders = orders_q.scalars().all()
@@ -165,9 +150,6 @@ async def get_orders(db: AsyncSession = Depends(get_db)):
 
 @router.get("/orders/{order_id}")
 async def get_order_by_id(order_id: int, db: AsyncSession = Depends(get_db)):
-    """
-    Devuelve las filas (order items) correspondientes a UN pedido por su order.id
-    """
     try:
         order_q = await db.execute(select(Order).where(Order.id == order_id))
         order = order_q.scalar_one_or_none()
@@ -183,15 +165,10 @@ async def get_order_by_id(order_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.get("/order/{user_id}")
 async def get_orders_by_user(user_id: int, db: AsyncSession = Depends(get_db)):
-    """
-    Endpoint que usa el frontend de USUARIO: GET /order/{userId}
-    Devuelve todas las filas (order items) de los pedidos creados por ese user_id.
-    """
     try:
         orders_q = await db.execute(select(Order).where(Order.user_id == int(user_id)).order_by(Order.created_at.desc()))
         orders = orders_q.scalars().all()
         if not orders:
-            # devolver array vacío (frontend espera estructura consistente)
             return JSONResponse(content={"detail":[{"result": []}]}, status_code=200)
 
         filas = await build_order_items_response_for_orders(orders, db)
@@ -201,12 +178,6 @@ async def get_orders_by_user(user_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.post("/order", status_code=201)
 async def create_order(request: Request, db: AsyncSession = Depends(get_db)):
-    """
-    Crea pedido. Acepta multipart/form-data con:
-      - data: JSON string con { user_id, price_order, products: [{id_producto, cantidad, talla, color}], nombre, apellido, direccion, email, telefono, descripcion }
-      - transfer_image: archivo (jpg/jpeg/png/webp)
-    También acepta application/json con el mismo objeto (sin archivo).
-    """
     try:
         content_type = (request.headers.get("content-type") or "").lower()
         is_multipart = "multipart/form-data" in content_type
@@ -237,7 +208,6 @@ async def create_order(request: Request, db: AsyncSession = Depends(get_db)):
         if user_id is None or price_order is None or not isinstance(products, list) or len(products) == 0:
             raise HTTPException(status_code=400, detail="Datos incompletos para crear el pedido")
 
-        # Crear la orden en transacción
         async with db.begin():
             new_order = Order(user_id=int(user_id), total=float(price_order), status="pendiente")
             for key in ("nombre","apellido","direccion","email","telefono","descripcion"):
@@ -296,7 +266,6 @@ async def update_order_user(order_id: int, request: Request, db: AsyncSession = 
         payload = {}
         transfer_image: Optional[UploadFile] = None
 
-        # Parseo del body (multipart o json)
         if is_multipart:
             form = await request.form()
             data_raw = form.get("data") or "{}"
@@ -313,17 +282,14 @@ async def update_order_user(order_id: int, request: Request, db: AsyncSession = 
             except Exception:
                 payload = {}
 
-        # Buscar pedido
         q = await db.execute(select(Order).where(Order.id == order_id))
         order = q.scalar_one_or_none()
         if not order:
             raise HTTPException(status_code=404, detail="Pedido no encontrado")
 
-        # El usuario solo puede editar si está PENDIENTE
         if (order.status or "").lower() != "pendiente":
             raise HTTPException(status_code=400, detail="Solo se pueden editar pedidos con estado 'Pendiente'")
 
-        # Si envía nueva imagen, subirla a storage
         if transfer_image:
             try:
                 prefix = f"orders/{getattr(order, 'user_id', 'temp')}"
@@ -334,7 +300,6 @@ async def update_order_user(order_id: int, request: Request, db: AsyncSession = 
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Error al subir imagen: {str(e)}")
 
-        # Campos permitidos para USUARIO (no incluye status)
         allowed = ("nombre", "apellido", "direccion", "email", "telefono", "descripcion", "image_transaccion")
         dirty = False
         for key in allowed:
@@ -351,7 +316,6 @@ async def update_order_user(order_id: int, request: Request, db: AsyncSession = 
         else:
             await db.refresh(order)
 
-        # Responder en el formato que consume el frontend
         filas = await build_order_items_response_for_orders([order], db)
         filas_order = [f for f in filas if f["id"] == order.id]
         return JSONResponse(content={"detail":[{"result": filas_order}]}, status_code=200)
@@ -367,13 +331,7 @@ async def update_order_user(order_id: int, request: Request, db: AsyncSession = 
     
 @router.put("/orders/{order_id}")
 async def update_order_status_admin(order_id: int, request: Request, db: AsyncSession = Depends(get_db)):
-    """
-    Espera body (JSON o form) con:
-      { "status_order": "Pendiente|En entrega|Rechazado|Finalizado", "descripcion": "opcional" }
-    Coincide con lo que envía el frontend admin.
-    """
     try:
-        # Carga payload desde JSON o form
         try:
             payload = await request.json()
         except Exception:
@@ -389,13 +347,11 @@ async def update_order_status_admin(order_id: int, request: Request, db: AsyncSe
         if status_val is None and descripcion is None:
             raise HTTPException(status_code=400, detail="Nada para actualizar")
 
-        # Buscar pedido
         q = await db.execute(select(Order).where(Order.id == order_id))
         order = q.scalar_one_or_none()
         if not order:
             raise HTTPException(status_code=404, detail="Pedido no encontrado")
 
-        # Admin SÍ puede cambiar estado aunque no esté 'Pendiente'
         if status_val is not None:
             order.status = status_val
         if descripcion is not None:
@@ -407,7 +363,6 @@ async def update_order_status_admin(order_id: int, request: Request, db: AsyncSe
         await db.commit()
         await db.refresh(order)
 
-        # Responder en el formato que consume el frontend admin
         filas = await build_order_items_response_for_orders([order], db)
         filas_order = [f for f in filas if f["id"] == order.id]
         return JSONResponse(content={"detail":[{"result": filas_order}]}, status_code=200)

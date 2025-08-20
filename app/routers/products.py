@@ -22,12 +22,10 @@ load_dotenv()
 
 router = APIRouter()
 
-# Configuración Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ====================== PYDANTIC / SCHEMAS ======================
 
 class ImageSchema(BaseModel):
     id: Optional[int] = None
@@ -70,7 +68,6 @@ class ProductOut(BaseModel):
     class Config:
         from_attributes = True
 
-# ====================== HELPERS ======================
 
 async def get_product_or_404(db: AsyncSession, product_id: int):
     result = await db.execute(
@@ -123,17 +120,12 @@ def format_product_response(product: Product):
     }
 
 async def upload_to_supabase_storage(file: UploadFile, product_id: int) -> str:
-    """
-    Sube el contenido del UploadFile a Supabase Storage usando un thread para evitar
-    I/O bloqueante dentro del loop async.
-    """
     try:
         file_ext = Path(file.filename).suffix or ""
         file_name = f"{product_id}_{uuid.uuid4()}{file_ext}"
         file_content = await file.read()
 
         def sync_upload_and_get_url():
-            # Subida síncrona a Supabase
             res = supabase.storage.from_("productimages").upload(
                 path=file_name,
                 file=file_content,
@@ -169,7 +161,6 @@ async def upload_to_supabase_storage(file: UploadFile, product_id: int) -> str:
         )
 
 async def supabase_remove_file(file_name: str):
-    """Eliminar archivo de supabase en un hilo (protege el loop)."""
     def sync_remove():
         return supabase.storage.from_("productimages").remove([file_name])
     return await anyio.to_thread.run_sync(sync_remove)
@@ -186,7 +177,6 @@ async def extract_files_from_form(form, keys: List[str]) -> List[UploadFile]:
                 files.append(f)
     return files
 
-# ====================== ENDPOINTS ======================
 
 @router.get("/products", response_class=JSONResponse)
 async def read_products(skip: int = 0, limit: int = 100, db: AsyncSession = Depends(get_db)):
@@ -239,10 +229,6 @@ async def read_product(product_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.post("/products", response_class=JSONResponse, status_code=201)
 async def create_product(request: Request, db: AsyncSession = Depends(get_db)):
-    """
-    Crea un producto. Soporta multipart/form-data (con imágenes) o JSON (sin imágenes).
-    Si las imágenes fallan al subirse, el producto **se crea** y se devuelve 201 con 'warnings'.
-    """
     new_product = None
     created = False
     upload_warnings = []
@@ -311,7 +297,7 @@ async def create_product(request: Request, db: AsyncSession = Depends(get_db)):
             colores_list = payload.get("colores", []) or []
             files = []
 
-        # validaciones
+        
         if not nombre_producto:
             raise HTTPException(status_code=400, detail="nombre_producto es requerido")
         if id_categoria_raw is None:
@@ -361,7 +347,6 @@ async def create_product(request: Request, db: AsyncSession = Depends(get_db)):
                 await db.commit()
                 await db.refresh(new_product)
 
-        # Añadir tallas y colores 
         if tallas_list:
             for talla in tallas_list:
                 if isinstance(talla, dict):
@@ -430,7 +415,6 @@ async def update_product(product_id: int, request: Request, db: AsyncSession = D
             existing_q = await db.execute(select(ProductImage).where(ProductImage.product_id == product_id))
             existing_images = existing_q.scalars().all()
 
-            # eliminar archivos antiguos en supabase con to_thread
             for img in existing_images:
                 try:
                     file_name = img.image_url.split('?')[0].split('/')[-1]
@@ -439,12 +423,10 @@ async def update_product(product_id: int, request: Request, db: AsyncSession = D
                 except Exception as e:
                     print(f"Warning: no pude eliminar archivo supabase {getattr(img,'image_url',None)}: {e}")
 
-            # borrar filas de imagenes en DB
             await db.execute(delete(ProductImage).where(ProductImage.product_id == product_id))
             await db.commit()
             await db.refresh(product)
 
-            # subir nuevas imágenes y crear filas
             for i, imagen in enumerate(nuevas_imagenes[:4]):
                 image_url = await upload_to_supabase_storage(imagen, product_id)
                 is_main_flag = (i == 0)
@@ -521,7 +503,6 @@ async def delete_product(product_id: int, db: AsyncSession = Depends(get_db)):
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al eliminar producto: {str(e)}")
 
-# Endpoints específicos para imágenes
 
 @router.post("/products/{product_id}/images", status_code=201)
 async def add_product_images(product_id: int, images: List[UploadFile] = File(...), db: AsyncSession = Depends(get_db)):

@@ -11,7 +11,6 @@ from app.database import get_db
 from app.models.user import User
 from .auth import get_current_user, get_password_hash, verify_password
 
-# Router con prefijo /user (mantiene compatibilidad)
 router = APIRouter(
     prefix="/user",
     tags=["users"],
@@ -21,7 +20,6 @@ router = APIRouter(
 
 router_public = APIRouter(tags=["users_public"])
 
-# --- Modelos Pydantic ---
 class UserProfileResponse(BaseModel):
     nombre: str
     apellido: str
@@ -51,7 +49,6 @@ class PasswordUpdate(BaseModel):
             raise ValueError('La contraseña debe contener al menos un carácter especial')
         return v
 
-# --- Helpers ---
 async def get_user_by_id(db: AsyncSession, user_id: int) -> User:
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
@@ -62,16 +59,13 @@ async def get_user_by_id(db: AsyncSession, user_id: int) -> User:
         )
     return user
 
-# normalizar nombres de campos diversos a nuestro esquema interno
 def normalize_password_payload(payload: Dict[str, Any]) -> Dict[str, Optional[str]]:
-    """Mapea posibles campos entrantes a current_password, new_password, confirm_password."""
     mapped = {
         "current_password": None,
         "new_password": None,
         "confirm_password": None
     }
 
-    # posibles claves para cada campo
     current_keys = ["current_password", "currentPassword", "current"]
     new_keys = ["new_password", "newPassword", "new", "password"]
     confirm_keys = ["confirm_password", "confirmPassword", "confirm", "check_password", "checkPassword", "check"]
@@ -93,25 +87,18 @@ def normalize_password_payload(payload: Dict[str, Any]) -> Dict[str, Optional[st
 
     return mapped
 
-# procesador común de actualización de contraseña
 async def _process_password_update(payload: Dict[str, Any], db: AsyncSession, current_user: User):
-    # normalizar
     data = normalize_password_payload(payload)
 
-    # Validar con Pydantic (current_password es opcional)
     try:
         pwd = PasswordUpdate(**data)
     except ValidationError as e:
-        # devolver el detalle de validación (FastAPI espera 422)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=e.errors())
 
-    # Validaciones de consistencia
     if pwd.new_password != pwd.confirm_password:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Las nuevas contraseñas no coinciden")
 
-    # Si la nueva contraseña es igual a la actual -> devolver 406 para que el frontend muestre el mensaje esperado
     if verify_password(pwd.new_password, current_user.password_hash):
-        # 406 Not Acceptable — el frontend maneja este status
         raise HTTPException(status_code=406, detail="La nueva contraseña no puede ser igual a la actual")
 
     current_user.password_hash = get_password_hash(pwd.new_password)
@@ -124,7 +111,6 @@ async def _process_password_update(payload: Dict[str, Any], db: AsyncSession, cu
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error al actualizar la contraseña: {str(e)}")
 
-# --- Endpoints ---
 
 @router.get("/{user_id}", response_model=dict)
 async def get_user_profile(
@@ -181,11 +167,6 @@ async def update_password_user_prefix(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Endpoint accesible en /user/update-password
-    Acepta JSON o form-data; mapea nombres y valida.
-    """
-    # leer payload: priorizamos JSON, si no form
     content_type = (request.headers.get("content-type") or "").lower()
     payload = {}
     if "application/json" in content_type:
@@ -205,19 +186,12 @@ async def update_password_user_prefix(
 
     return await _process_password_update(payload, db, current_user)
 
-# Ruta pública sin prefijo para que el frontend siga llamando /update-password
 @router_public.put("/update-password")
 async def update_password_public(
     request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Endpoint accesible en /update-password (sin prefijo).
-    Mapea exactamente el payload que envía el frontend:
-      { new_password: "..", check_password: ".." }
-    pero también soporta variantes y form-data.
-    """
     content_type = (request.headers.get("content-type") or "").lower()
     payload = {}
     if "application/json" in content_type:
