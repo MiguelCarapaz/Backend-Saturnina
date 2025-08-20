@@ -36,7 +36,7 @@ USER_ROLE = "rol:vuqn7k4vw0m1a3wt7fkb"
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
-router = APIRouter(tags=["authentication"])
+router = APIRouter()
 class LoginForm(BaseModel):
     email: str
     password: str

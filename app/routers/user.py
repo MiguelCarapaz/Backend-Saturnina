@@ -13,12 +13,11 @@ from .auth import get_current_user, get_password_hash, verify_password
 
 router = APIRouter(
     prefix="/user",
-    tags=["users"],
     dependencies=[Depends(get_current_user)]
 )
 
 
-router_public = APIRouter(tags=["users_public"])
+router_public = APIRouter()
 
 class UserProfileResponse(BaseModel):
     nombre: str
