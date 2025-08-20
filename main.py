@@ -9,7 +9,10 @@ from app.database import get_db
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 
-app = FastAPI()
+app = FastAPI(
+    title="Saturnina API",
+    description="API del backend de Saturnina",
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,20 +23,28 @@ app.add_middleware(
     expose_headers=["*"]
 )
 
-# Routers
-app.include_router(auth.router)
-app.include_router(user.router)
-app.include_router(user_public_router)
-app.include_router(products.router)
-app.include_router(category.router)
-app.include_router(orders_router.router)
-app.include_router(comments.router)
 
-@app.api_route("/", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"])
+# Autenticación
+app.include_router(auth.router, prefix="/auth", tags=["Autenticación"])
+
+# Endpoints Públicos
+app.include_router(user_public_router, prefix="/public", tags=["Público"])
+
+# Endpoints de Usuario
+app.include_router(user.router, prefix="/users", tags=["Usuarios"])
+app.include_router(orders_router.router, prefix="/orders", tags=["Usuarios"])
+app.include_router(comments.router, prefix="/comments", tags=["Usuarios"])
+
+# Endpoints de Administrador
+app.include_router(category.router, prefix="/categories", tags=["Administración"])
+app.include_router(products.router, prefix="/products", tags=["Administración"])
+
+
+@app.get("/", tags=["General"])
 def root():
     return {"message": "Saturnina Backend API"}
 
-@app.get("/test-db")
+@app.get("/test-db", tags=["General"])
 async def test_db_connection(db: AsyncSession = Depends(get_db)):
     try:
         await db.execute(text("SELECT 1"))
