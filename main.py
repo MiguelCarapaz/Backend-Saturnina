@@ -25,19 +25,19 @@ app.add_middleware(
 
 
 # Autenticación
-app.include_router(auth.router, prefix="/auth", tags=["Autenticación"])
+app.include_router(auth.router, tags=["Autenticación"])
 
 # Endpoints Públicos
-app.include_router(user_public_router, prefix="/public", tags=["Público"])
+app.include_router(user_public_router, tags=["Público"])
 
 # Endpoints de Usuario
-app.include_router(user.router, prefix="/users", tags=["Usuarios"])
-app.include_router(orders_router.router, prefix="/orders", tags=["Usuarios"])
-app.include_router(comments.router, prefix="/comments", tags=["Usuarios"])
+app.include_router(user.router, tags=["Usuarios"])
+app.include_router(orders_router.router, tags=["Usuarios"])
+app.include_router(comments.router, tags=["Usuarios"])
 
 # Endpoints de Administrador
-app.include_router(category.router, prefix="/categories", tags=["Administración"])
-app.include_router(products.router, prefix="/products", tags=["Administración"])
+app.include_router(category.router, tags=["Administración"])
+app.include_router(products.router, tags=["Administración"])
 
 
 @app.get("/", tags=["General"])
