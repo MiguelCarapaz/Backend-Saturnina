@@ -193,7 +193,7 @@ async def update_comment(comment_id: int, request: Request, db: AsyncSession = D
     return JSONResponse(content={"result": out}, status_code=200)
 
 
-@router.delete("/comments/{comment_id}", status_code=204)
+@router.delete("/comments/{comment_id}", status_code=204, tags=["Administración"])
 async def delete_comment(comment_id: int, db: AsyncSession = Depends(get_db)):
     q = await db.execute(select(Comment).where(Comment.id == comment_id))
     comment = q.scalar_one_or_none()
@@ -281,7 +281,7 @@ async def update_comment_general(comment_id: int, request: Request, db: AsyncSes
     return JSONResponse(content={"result": out}, status_code=200)
 
 
-@router.delete("/comments-general/{comment_id}", status_code=204)
+@router.delete("/comments-general/{comment_id}", status_code=204, tags=["Administración"])
 async def delete_comment_general(comment_id: int, db: AsyncSession = Depends(get_db)):
     q = await db.execute(select(Comment).where(Comment.id == comment_id, Comment.product_id == None))
     comment = q.scalar_one_or_none()

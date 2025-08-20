@@ -329,7 +329,7 @@ async def update_order_user(order_id: int, request: Request, db: AsyncSession = 
             pass
         raise HTTPException(status_code=500, detail=f"Error al actualizar pedido: {str(e)}")
     
-@router.put("/orders/{order_id}")
+@router.put("/orders/{order_id}", tags=["Administración"])
 async def update_order_status_admin(order_id: int, request: Request, db: AsyncSession = Depends(get_db)):
     try:
         try:
@@ -376,7 +376,7 @@ async def update_order_status_admin(order_id: int, request: Request, db: AsyncSe
             pass
         raise HTTPException(status_code=500, detail=f"Error al actualizar estado del pedido: {str(e)}")
 
-@router.delete("/orders/{order_id}", status_code=204)
+@router.delete("/orders/{order_id}", status_code=204, tags=["Administración"])
 async def delete_order(order_id: int, db: AsyncSession = Depends(get_db)):
     try:
         q = await db.execute(select(Order).where(Order.id == order_id))
